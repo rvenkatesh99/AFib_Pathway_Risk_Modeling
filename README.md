@@ -4,8 +4,11 @@ Pathway-based machine learning models for atrial fibrillation risk prediction. M
 
 ## Modeling
 Baselines: PRS logistic regression, L1 logistic regression, random forest
+
 Global softmax attention model (population-level pathway ranking)
+
 Pathway transformer with CLS token and per-individual attention
+
 GraphSAGE GNN over a pathway interaction graph
 
 ## Input data format
