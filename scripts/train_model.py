@@ -132,7 +132,7 @@ def _make_loaders(pw, cov, labels, idx_tr, idx_va, idx_te):
         pw[idx_tr], cov[idx_tr], labels[idx_tr],
         pw[idx_va], cov[idx_va], labels[idx_va],
         pw[idx_te], cov[idx_te], labels[idx_te],
-        batch_size=TRAIN_CFG["batch_size"], num_workers=0,
+        batch_size=TRAIN_CFG["batch_size"],
     )
 
 
