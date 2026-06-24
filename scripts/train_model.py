@@ -31,19 +31,18 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.data.dataset import load_data_from_files, make_dataloaders
+from src.trainer import load_data, make_loaders, train, tune_hyperparameters
 from src.models.baseline import (
     build_prs_logistic, build_l1_logistic, build_random_forest,
     flatten_pathway_matrix, save_model,
-    get_l1_pathway_ranking, get_rf_pathway_ranking,
 )
 from src.models.global_attention import GlobalPathwayAttentionModel
 from src.models.pathway_transformer import PathwayTransformer
 from src.models.pathway_gnn import PathwayGNN, build_string_edge_index, build_reactome_edge_index
-from src.utils.trainer import train, tune_hyperparameters
-from src.evaluation.metrics import compute_metrics, bootstrap_metrics
-from src.evaluation.interpretability import (
-    get_attention_pathway_ranking, compute_gradcam_pathway_ranking,
+from src.metrics import compute_metrics, bootstrap_metrics
+from src.interpretability import (
+    get_attention_pathway_ranking, get_l1_pathway_ranking, get_rf_pathway_ranking,
+    compute_gradcam_pathway_ranking,
 )
 
 # ── Hyperparameter grids (Cartesian product of each list) ────────────────────
@@ -111,7 +110,7 @@ def parse_args():
 
 # ── Data loading ──────────────────────────────────────────────────────────────
 
-def load_data(results_dir):
+def load_splits(results_dir):
     config_path = os.path.join(results_dir, "data_config.json")
     splits_path = os.path.join(results_dir, "splits.npz")
     if not os.path.exists(config_path) or not os.path.exists(splits_path):
@@ -120,7 +119,7 @@ def load_data(results_dir):
     with open(config_path) as f:
         config = json.load(f)
 
-    pw, cov, labels, pw_names, cov_cols, _ = load_data_from_files(
+    pw, cov, labels, pw_names, cov_cols, _ = load_data(
         config["pathway_matrix"], config["covariates"],
         config["label_col"], config["covariate_cols"],
     )
@@ -128,8 +127,8 @@ def load_data(results_dir):
     return pw, cov, labels, pw_names, cov_cols, splits["idx_train"], splits["idx_val"], splits["idx_test"], config
 
 
-def make_loaders(pw, cov, labels, idx_tr, idx_va, idx_te):
-    return make_dataloaders(
+def _make_loaders(pw, cov, labels, idx_tr, idx_va, idx_te):
+    return make_loaders(
         pw[idx_tr], cov[idx_tr], labels[idx_tr],
         pw[idx_va], cov[idx_va], labels[idx_va],
         pw[idx_te], cov[idx_te], labels[idx_te],
@@ -269,7 +268,7 @@ def run_neural(args, model_cls, model_kwargs, train_kwargs,
                pw, cov, labels, pw_names, idx_tr, idx_va, idx_te,
                out_dir, weight_file, post_fn=None):
     """Shared training loop for all three neural models."""
-    train_loader, val_loader, test_loader = make_loaders(pw, cov, labels, idx_tr, idx_va, idx_te)
+    train_loader, val_loader, test_loader = _make_loaders(pw, cov, labels, idx_tr, idx_va, idx_te)
 
     if args.tune:
         grid = HPARAM_GRIDS[args.model]
@@ -386,7 +385,7 @@ def main():
     torch.manual_seed(42)
     np.random.seed(42)
 
-    pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, config = load_data(args.results_dir)
+    pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, config = load_splits(args.results_dir)
     out_dir = os.path.join(args.results_dir, args.model)
     os.makedirs(out_dir, exist_ok=True)
 

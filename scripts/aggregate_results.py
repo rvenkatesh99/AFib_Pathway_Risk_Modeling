@@ -23,8 +23,8 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.evaluation.metrics import pairwise_delong, evaluate_subgroups
-from src.evaluation.interpretability import spearman_rank_concordance
+from src.metrics import pairwise_delong, evaluate_subgroups
+from src.interpretability import spearman_rank_concordance
 
 MODELS = ["prs_logistic", "l1_logistic", "random_forest", "global_attention", "transformer", "gnn"]
 

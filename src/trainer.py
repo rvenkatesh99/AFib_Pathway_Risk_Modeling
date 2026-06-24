@@ -1,0 +1,171 @@
+import copy
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+from sklearn.metrics import roc_auc_score
+from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
+
+
+# ── Data loading and batching ─────────────────────────────────────────────────
+
+def load_data(pathway_matrix_path, covariate_path, label_col="afib", covariate_cols=None):
+    def _read(path):
+        if path.endswith(".parquet"):
+            return pd.read_parquet(path)
+        return pd.read_csv(path, sep="\t" if path.endswith(".tsv") else ",")
+
+    pw_df  = _read(pathway_matrix_path)
+    cov_df = _read(covariate_path)
+
+    id_col      = "sample_id" if "sample_id" in pw_df.columns else None
+    pw_cols     = [c for c in pw_df.columns if c != id_col]
+    pw          = pw_df[pw_cols].values.astype(np.float32)
+    sample_ids  = pw_df[id_col].tolist() if id_col else None
+
+    labels = cov_df[label_col].values.astype(np.float32)
+    if covariate_cols is None:
+        covariate_cols = [c for c in cov_df.columns if c not in (label_col, "sample_id")]
+    cov = cov_df[covariate_cols].values.astype(np.float32)
+
+    return pw, cov, labels, pw_cols, covariate_cols, sample_ids
+
+
+class PathwayDataset(Dataset):
+    def __init__(self, pw, cov, labels):
+        if pw.ndim == 2:
+            pw = pw[:, :, np.newaxis]
+        self.pw     = torch.tensor(pw,     dtype=torch.float32)
+        self.cov    = torch.tensor(cov,    dtype=torch.float32)
+        self.labels = torch.tensor(labels, dtype=torch.float32)
+
+    def __len__(self):
+        return len(self.labels)
+
+    def __getitem__(self, idx):
+        return {"pathway_features": self.pw[idx],
+                "covariates":       self.cov[idx],
+                "label":            self.labels[idx]}
+
+
+def make_loaders(pw_tr, cov_tr, y_tr, pw_va, cov_va, y_va, pw_te, cov_te, y_te, batch_size=256):
+    counts  = np.bincount(y_tr.astype(int))
+    weights = torch.tensor(1.0 / counts[y_tr.astype(int)], dtype=torch.float32)
+    sampler = WeightedRandomSampler(weights, num_samples=len(y_tr), replacement=True)
+
+    tr = DataLoader(PathwayDataset(pw_tr, cov_tr, y_tr), batch_size=batch_size,
+                    sampler=sampler, num_workers=0)
+    va = DataLoader(PathwayDataset(pw_va, cov_va, y_va), batch_size=batch_size,
+                    shuffle=False, num_workers=0)
+    te = DataLoader(PathwayDataset(pw_te, cov_te, y_te), batch_size=batch_size,
+                    shuffle=False, num_workers=0)
+    return tr, va, te
+
+
+# ── Training loop ─────────────────────────────────────────────────────────────
+
+class EarlyStopping:
+    def __init__(self, patience=15, min_delta=1e-4):
+        self.patience   = patience
+        self.min_delta  = min_delta
+        self.best_score = -np.inf
+        self.counter    = 0
+        self.best_state = None
+
+    def step(self, score, model):
+        if score > self.best_score + self.min_delta:
+            self.best_score = score
+            self.counter    = 0
+            self.best_state = copy.deepcopy(model.state_dict())
+        else:
+            self.counter += 1
+        return self.counter >= self.patience
+
+    def restore_best(self, model):
+        model.load_state_dict(self.best_state)
+
+
+def _pos_weight(labels, device):
+    n_neg = (labels == 0).sum()
+    n_pos = (labels == 1).sum()
+    return torch.tensor([n_neg / max(n_pos, 1)], dtype=torch.float32, device=device)
+
+
+def train(model, train_loader, val_loader, train_labels,
+          n_epochs=200, lr=1e-3, weight_decay=1e-4, patience=15, device="cpu", verbose=True):
+    model     = model.to(device)
+    criterion = nn.BCEWithLogitsLoss(pos_weight=_pos_weight(train_labels, device))
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_epochs, eta_min=lr/100)
+    stopper   = EarlyStopping(patience=patience)
+    history   = {"train_loss": [], "val_loss": [], "val_auroc": []}
+
+    for epoch in range(1, n_epochs + 1):
+        model.train()
+        total = 0.0
+        for batch in train_loader:
+            pw, cov, y = (batch[k].to(device) for k in ("pathway_features", "covariates", "label"))
+            optimizer.zero_grad()
+            loss = criterion(model(pw, cov), y)
+            loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            total += loss.item() * y.size(0)
+        train_loss = total / len(train_loader.dataset)
+
+        val_loss, val_auroc = _evaluate(model, val_loader, criterion, device)
+        scheduler.step()
+
+        history["train_loss"].append(train_loss)
+        history["val_loss"].append(val_loss)
+        history["val_auroc"].append(val_auroc)
+
+        if verbose and epoch % 10 == 0:
+            print(f"  epoch {epoch:03d} | train={train_loss:.4f} | val={val_loss:.4f} | auroc={val_auroc:.4f}")
+
+        if stopper.step(val_auroc, model):
+            if verbose:
+                print(f"  early stop at epoch {epoch} (best auroc={stopper.best_score:.4f})")
+            break
+
+    stopper.restore_best(model)
+    return model, history
+
+
+@torch.no_grad()
+def _evaluate(model, loader, criterion, device):
+    model.eval()
+    total, probs, labels = 0.0, [], []
+    for batch in loader:
+        pw, cov, y = (batch[k].to(device) for k in ("pathway_features", "covariates", "label"))
+        logits = model(pw, cov)
+        total += criterion(logits, y).item() * y.size(0)
+        probs.append(torch.sigmoid(logits).cpu().numpy())
+        labels.append(y.cpu().numpy())
+    probs  = np.concatenate(probs)
+    labels = np.concatenate(labels)
+    auroc  = roc_auc_score(labels, probs) if len(np.unique(labels)) > 1 else 0.5
+    return total / len(loader.dataset), auroc
+
+
+# ── Hyperparameter tuning ─────────────────────────────────────────────────────
+
+def tune_hyperparameters(model_cls, model_kwargs_grid, train_loader, val_loader,
+                         train_labels, device="cpu", n_epochs=60, patience=8):
+    TRAIN_KEYS = {"lr", "weight_decay"}
+    best_auroc, best_model_kw, best_train_kw, results = -1.0, None, None, []
+
+    for i, kwargs in enumerate(model_kwargs_grid):
+        train_kw = {k: v for k, v in kwargs.items() if k in TRAIN_KEYS}
+        model_kw = {k: v for k, v in kwargs.items() if k not in TRAIN_KEYS}
+        _, history = train(model_cls(**model_kw), train_loader, val_loader, train_labels,
+                           n_epochs=n_epochs, patience=patience, device=device,
+                           verbose=False, **train_kw)
+        auroc = max(history["val_auroc"])
+        results.append({"kwargs": kwargs, "val_auroc": auroc})
+        print(f"  [{i+1}/{len(model_kwargs_grid)}] auroc={auroc:.4f} | {kwargs}")
+        if auroc > best_auroc:
+            best_auroc, best_model_kw, best_train_kw = auroc, model_kw, train_kw
+
+    results.sort(key=lambda x: -x["val_auroc"])
+    return best_model_kw, best_train_kw, best_auroc, results
