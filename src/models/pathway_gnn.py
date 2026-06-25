@@ -71,6 +71,9 @@ class PathwayGNN(nn.Module):
         dropout: float = 0.1,
         edge_index: torch.Tensor = None,
     ):
+        if n_pathways == 0:
+            raise ValueError("PathwayGNN requires at least one pathway (n_pathways > 0). "
+                             "For covariates-only runs use global_attention or transformer.")
         _check_pygeometric()
         super().__init__()
         self.n_pathways = n_pathways

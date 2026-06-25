@@ -100,7 +100,19 @@ def parse_args():
     p.add_argument("--model", required=True, choices=list(DEFAULTS))
     p.add_argument("--results_dir", default="results/")
     p.add_argument("--tune", action="store_true")
-    p.add_argument("--prs_col", default=None)
+    p.add_argument("--prs_col", default=None,
+                   help="Column name for PRS in the covariates file. "
+                        "If provided it is included as a covariate by default. "
+                        "Omit to exclude PRS from the model.")
+    p.add_argument("--pathway_cols", nargs="+", default=None,
+                   help="Pathway matrix columns to use as structured pathway input. "
+                        "Accepts explicit column names or a path to a text file (one name per line). "
+                        "Default: all pathway columns. Pass an empty string or omit to run "
+                        "covariates-only (no pathway branch).")
+    p.add_argument("--covariate_cols", nargs="+", default=None,
+                   help="Covariate columns to pass through the flat covariate encoder. "
+                        "Default: all columns in the covariates file except the label. "
+                        "PRS is included here (not in the pathway matrix) when --prs_col is set.")
     p.add_argument("--string_edges", default=None)
     p.add_argument("--reactome_edges", default=None)
     p.add_argument("--pathway_gene_sets", default=None)
@@ -108,9 +120,38 @@ def parse_args():
     return p.parse_args()
 
 
+def _get_all_pw_names(results_dir):
+    with open(os.path.join(results_dir, "data_config.json")) as f:
+        return json.load(f)["pathway_names"]
+
+
+def _resolve_pathway_cols(args, all_pw_names):
+    """
+    Resolve --pathway_cols to a list of column names.
+    Returns an empty list for covariates-only runs (K=0).
+    Accepts explicit column names or a single path to a text file.
+    """
+    if args.pathway_cols is None:
+        return all_pw_names                          # default: all pathways
+
+    if args.pathway_cols == [""]:
+        return []                                    # explicit covariates-only
+
+    if len(args.pathway_cols) == 1 and os.path.isfile(args.pathway_cols[0]):
+        with open(args.pathway_cols[0]) as f:
+            requested = [l.strip() for l in f if l.strip()]
+    else:
+        requested = args.pathway_cols
+
+    unknown = set(requested) - set(all_pw_names)
+    if unknown:
+        raise ValueError(f"Unknown pathway columns: {sorted(unknown)}")
+    return requested
+
+
 # ── Data loading ──────────────────────────────────────────────────────────────
 
-def load_splits(results_dir):
+def load_splits(results_dir, pathway_cols=None, covariate_cols=None):
     config_path = os.path.join(results_dir, "data_config.json")
     splits_path = os.path.join(results_dir, "splits.npz")
     if not os.path.exists(config_path) or not os.path.exists(splits_path):
@@ -119,12 +160,22 @@ def load_splits(results_dir):
     with open(config_path) as f:
         config = json.load(f)
 
-    pw, cov, labels, pw_names, cov_cols, _ = load_data(
+    pw, cov, labels, pw_names, cov_cols_all, _ = load_data(
         config["pathway_matrix"], config["covariates"],
-        config["label_col"], config["covariate_cols"],
+        config["label_col"], covariate_cols or config["covariate_cols"],
     )
+
+    if pathway_cols is not None:
+        if len(pathway_cols) == 0:
+            pw       = np.empty((pw.shape[0], 0), dtype=np.float32)
+            pw_names = []
+        else:
+            idx      = [pw_names.index(c) for c in pathway_cols]
+            pw       = pw[:, idx] if pw.ndim == 2 else pw[:, idx, :]
+            pw_names = pathway_cols
+
     splits = np.load(splits_path)
-    return pw, cov, labels, pw_names, cov_cols, splits["idx_train"], splits["idx_val"], splits["idx_test"], config
+    return pw, cov, labels, pw_names, cov_cols_all, splits["idx_train"], splits["idx_val"], splits["idx_test"]
 
 
 def _make_loaders(pw, cov, labels, idx_tr, idx_va, idx_te):
@@ -309,8 +360,15 @@ def run_neural(args, model_cls, model_kwargs, train_kwargs,
                  search_results_out, args.bootstrap_iters)
 
 
-def run_global_attention(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, out_dir, config, **_):
-    K, T, C = config["n_pathways"], config["pathway_input_dim"], config["covariate_dim"]
+def _dims(pw, cov):
+    K = pw.shape[1]
+    T = pw.shape[2] if pw.ndim == 3 else (1 if K > 0 else 0)
+    C = cov.shape[1]
+    return K, T, C
+
+
+def run_global_attention(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, out_dir, **_):
+    K, T, C = _dims(pw, cov)
     fixed = dict(n_pathways=K, pathway_input_dim=T, covariate_dim=C)
 
     def post(model, test_loader, pw_names, out_dir):
@@ -321,8 +379,8 @@ def run_global_attention(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_
                out_dir, "global_attention.pt", post_fn=post)
 
 
-def run_transformer(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, out_dir, config, **_):
-    K, T, C = config["n_pathways"], config["pathway_input_dim"], config["covariate_dim"]
+def run_transformer(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, out_dir, **_):
+    K, T, C = _dims(pw, cov)
     fixed = dict(n_pathways=K, pathway_input_dim=T, covariate_dim=C, n_layers=2)
 
     def post(model, test_loader, pw_names, out_dir):
@@ -337,9 +395,9 @@ def run_transformer(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, i
                out_dir, "transformer.pt", post_fn=post)
 
 
-def run_gnn(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, out_dir, config, **_):
+def run_gnn(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, out_dir, **_):
     import pandas as pd
-    K, T, C = config["n_pathways"], config["pathway_input_dim"], config["covariate_dim"]
+    K, T, C = _dims(pw, cov)
 
     if args.string_edges and args.pathway_gene_sets:
         with open(args.pathway_gene_sets) as f:
@@ -357,7 +415,7 @@ def run_gnn(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, o
         raise ValueError("GNN requires --string_edges + --pathway_gene_sets, or --reactome_edges")
 
     print(f"  Graph: {K} nodes, {edge_index.shape[1]//2} undirected edges")
-    fixed = dict(n_pathways=K, pathway_input_dim=T, covariate_dim=C, edge_index=edge_index)
+    fixed = dict(n_pathways=K, pathway_input_dim=T, covariate_dim=C, edge_index=edge_index)  # noqa: F821
 
     def post(model, test_loader, pw_names, out_dir):
         ranking = compute_gradcam_pathway_ranking(model, test_loader, pw_names, device="cpu")
@@ -385,17 +443,23 @@ def main():
     torch.manual_seed(42)
     np.random.seed(42)
 
-    pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, config = load_splits(args.results_dir)
+    pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te = load_splits(
+        args.results_dir,
+        pathway_cols=_resolve_pathway_cols(args, _get_all_pw_names(args.results_dir)),
+        covariate_cols=args.covariate_cols,
+    )
+
+    K, T, C = _dims(pw, cov) if pw.ndim >= 2 else (0, 0, cov.shape[1])
+    feature_desc = f"{K} pathways (T={T}), {C} covariates"
+    print(f"[{args.model}] tune={args.tune} | features: {feature_desc} | "
+          f"train={len(idx_tr)}, val={len(idx_va)}, test={len(idx_te)}")
+
+    # Output goes into a subdirectory named after the model; if a non-default
+    # pathway subset is used, nest further so runs don't clobber each other.
     out_dir = os.path.join(args.results_dir, args.model)
     os.makedirs(out_dir, exist_ok=True)
 
-    print(f"[{args.model}] tune={args.tune} | "
-          f"train={len(idx_tr)}, val={len(idx_va)}, test={len(idx_te)}")
-
-    RUNNERS[args.model](
-        args, pw, cov, labels, pw_names, cov_cols,
-        idx_tr, idx_va, idx_te, out_dir, config=config,
-    )
+    RUNNERS[args.model](args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, out_dir)
     print(f"[{args.model}] done -> {out_dir}/")
 
 
