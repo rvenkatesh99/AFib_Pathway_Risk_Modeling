@@ -98,7 +98,11 @@ TUNE_CFG  = dict(n_epochs=60,  patience=8)
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--model", required=True, choices=list(DEFAULTS))
-    p.add_argument("--results_dir", default="results/")
+    p.add_argument("--results_dir", default="results/",
+                   help="Directory where this run's outputs are written (model subdir created inside).")
+    p.add_argument("--splits_dir", default=None,
+                   help="Directory containing splits.npz and data_config.json from prepare_splits.py. "
+                        "Defaults to --results_dir when not set (single-experiment mode).")
     p.add_argument("--tune", action="store_true")
     p.add_argument("--prs_col", default=None,
                    help="Column name for PRS in the covariates file. "
@@ -120,8 +124,8 @@ def parse_args():
     return p.parse_args()
 
 
-def _get_all_pw_names(results_dir):
-    with open(os.path.join(results_dir, "data_config.json")) as f:
+def _get_all_pw_names(splits_dir):
+    with open(os.path.join(splits_dir, "data_config.json")) as f:
         return json.load(f)["pathway_names"]
 
 
@@ -151,11 +155,11 @@ def _resolve_pathway_cols(args, all_pw_names):
 
 # ── Data loading ──────────────────────────────────────────────────────────────
 
-def load_splits(results_dir, pathway_cols=None, covariate_cols=None):
-    config_path = os.path.join(results_dir, "data_config.json")
-    splits_path = os.path.join(results_dir, "splits.npz")
+def load_splits(splits_dir, pathway_cols=None, covariate_cols=None):
+    config_path = os.path.join(splits_dir, "data_config.json")
+    splits_path = os.path.join(splits_dir, "splits.npz")
     if not os.path.exists(config_path) or not os.path.exists(splits_path):
-        raise FileNotFoundError(f"Run prepare_splits.py first (missing files in {results_dir})")
+        raise FileNotFoundError(f"Run prepare_splits.py first (missing files in {splits_dir})")
 
     with open(config_path) as f:
         config = json.load(f)
@@ -440,12 +444,13 @@ RUNNERS = {
 
 def main():
     args = parse_args()
+    splits_dir = args.splits_dir or args.results_dir
     torch.manual_seed(42)
     np.random.seed(42)
 
     pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te = load_splits(
-        args.results_dir,
-        pathway_cols=_resolve_pathway_cols(args, _get_all_pw_names(args.results_dir)),
+        splits_dir,
+        pathway_cols=_resolve_pathway_cols(args, _get_all_pw_names(splits_dir)),
         covariate_cols=args.covariate_cols,
     )
 
