@@ -26,6 +26,7 @@ import itertools
 import json
 import os
 import sys
+import time
 import numpy as np
 import torch
 
@@ -442,30 +443,55 @@ RUNNERS = {
 }
 
 
+def _fmt(seconds):
+    """Format elapsed seconds as m:ss or s."""
+    if seconds >= 60:
+        return f"{int(seconds)//60}m {int(seconds)%60:02d}s"
+    return f"{seconds:.1f}s"
+
+
+def _step(label, model_name):
+    """Print a timestamped progress line and return the start time."""
+    msg = f"[{model_name}] {label}..."
+    print(msg, flush=True)
+    return time.time()
+
+
+def _done(label, model_name, t0):
+    elapsed = time.time() - t0
+    print(f"[{model_name}] {label} done ({_fmt(elapsed)})", flush=True)
+
+
 def main():
     args = parse_args()
     splits_dir = args.splits_dir or args.results_dir
     torch.manual_seed(42)
     np.random.seed(42)
 
+    wall_start = time.time()
+
+    t = _step("loading data", args.model)
     pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te = load_splits(
         splits_dir,
         pathway_cols=_resolve_pathway_cols(args, _get_all_pw_names(splits_dir)),
         covariate_cols=args.covariate_cols,
     )
+    _done("loading data", args.model, t)
 
     K, T, C = _dims(pw, cov) if pw.ndim >= 2 else (0, 0, cov.shape[1])
     feature_desc = f"{K} pathways (T={T}), {C} covariates"
     print(f"[{args.model}] tune={args.tune} | features: {feature_desc} | "
-          f"train={len(idx_tr)}, val={len(idx_va)}, test={len(idx_te)}")
+          f"train={len(idx_tr)}, val={len(idx_va)}, test={len(idx_te)}", flush=True)
 
-    # Output goes into a subdirectory named after the model; if a non-default
-    # pathway subset is used, nest further so runs don't clobber each other.
     out_dir = os.path.join(args.results_dir, args.model)
     os.makedirs(out_dir, exist_ok=True)
 
+    t = _step("training", args.model)
     RUNNERS[args.model](args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, out_dir)
-    print(f"[{args.model}] done -> {out_dir}/")
+    _done("training", args.model, t)
+
+    total = time.time() - wall_start
+    print(f"[{args.model}] finished -> {out_dir}/  (total: {_fmt(total)})", flush=True)
 
 
 if __name__ == "__main__":

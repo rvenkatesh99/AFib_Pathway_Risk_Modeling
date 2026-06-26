@@ -1,4 +1,5 @@
 import copy
+import time
 import numpy as np
 import pandas as pd
 import torch
@@ -99,6 +100,7 @@ def train(model, train_loader, val_loader, train_labels,
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_epochs, eta_min=lr/100)
     stopper   = EarlyStopping(patience=patience)
     history   = {"train_loss": [], "val_loss": [], "val_auroc": []}
+    t0        = time.time()
 
     for epoch in range(1, n_epochs + 1):
         model.train()
@@ -121,11 +123,16 @@ def train(model, train_loader, val_loader, train_labels,
         history["val_auroc"].append(val_auroc)
 
         if verbose and epoch % 10 == 0:
-            print(f"  epoch {epoch:03d} | train={train_loss:.4f} | val={val_loss:.4f} | auroc={val_auroc:.4f}")
+            elapsed = time.time() - t0
+            print(f"  epoch {epoch:3d}/{n_epochs} | "
+                  f"train={train_loss:.4f} | val={val_loss:.4f} | auroc={val_auroc:.4f} | "
+                  f"{elapsed:.0f}s elapsed", flush=True)
 
         if stopper.step(val_auroc, model):
             if verbose:
-                print(f"  early stop at epoch {epoch} (best auroc={stopper.best_score:.4f})")
+                elapsed = time.time() - t0
+                print(f"  early stop at epoch {epoch} | "
+                      f"best val auroc={stopper.best_score:.4f} | {elapsed:.0f}s elapsed", flush=True)
             break
 
     stopper.restore_best(model)
@@ -156,14 +163,16 @@ def tune_hyperparameters(model_cls, model_kwargs_grid, train_loader, val_loader,
     best_auroc, best_model_kw, best_train_kw, results = -1.0, None, None, []
 
     for i, kwargs in enumerate(model_kwargs_grid):
+        t_cand = time.time()
         train_kw = {k: v for k, v in kwargs.items() if k in TRAIN_KEYS}
         model_kw = {k: v for k, v in kwargs.items() if k not in TRAIN_KEYS}
         _, history = train(model_cls(**model_kw), train_loader, val_loader, train_labels,
                            n_epochs=n_epochs, patience=patience, device=device,
                            verbose=False, **train_kw)
         auroc = max(history["val_auroc"])
+        elapsed = time.time() - t_cand
         results.append({"kwargs": kwargs, "val_auroc": auroc})
-        print(f"  [{i+1}/{len(model_kwargs_grid)}] auroc={auroc:.4f} | {kwargs}")
+        print(f"  [{i+1}/{len(model_kwargs_grid)}] auroc={auroc:.4f} | {elapsed:.0f}s | {kwargs}", flush=True)
         if auroc > best_auroc:
             best_auroc, best_model_kw, best_train_kw = auroc, model_kw, train_kw
 
