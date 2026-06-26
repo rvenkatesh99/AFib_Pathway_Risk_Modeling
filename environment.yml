@@ -21,7 +21,5 @@ dependencies:
   - jupyter
   - ipykernel
   - pip:
-    # PyTorch Geometric (CPU) — install via pip after torch is resolved
+    # torch_geometric core only — scatter/sparse installed separately (see below)
     - torch_geometric
-    - torch_scatter
-    - torch_sparse
