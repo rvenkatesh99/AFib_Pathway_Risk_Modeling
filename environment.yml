@@ -1,0 +1,27 @@
+name: afib-pathway
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  # Core scientific stack
+  - numpy
+  - pandas
+  - scipy
+  - scikit-learn
+  - joblib
+  # Plotting
+  - matplotlib
+  # PyTorch (CPU-only)
+  - pytorch::pytorch
+  - pytorch::cpuonly
+  # Notebook
+  - jupyter
+  - ipykernel
+  - pip:
+    # PyTorch Geometric (CPU) — install via pip after torch is resolved
+    - torch_geometric
+    - torch_scatter
+    - torch_sparse
