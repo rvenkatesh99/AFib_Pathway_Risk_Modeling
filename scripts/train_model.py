@@ -276,7 +276,7 @@ def run_l1_logistic(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, i
     final_y = np.concatenate([labels[idx_tr], labels[idx_va]])
     model = build_l1_logistic()
     model.fit(final_X, final_y)
-    best_C = float(model.named_steps["clf"].best_C_)
+    best_C = float(np.atleast_1d(model.named_steps["clf"].C_)[0])
     print(f"  Best C (internal CV): {best_C:.5g}")
     save_model(model, os.path.join(out_dir, "l1_logistic.pkl"))
     probs = model.predict_proba(X["te"])[:, 1]

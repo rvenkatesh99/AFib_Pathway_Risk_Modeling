@@ -31,12 +31,11 @@ def build_l1_logistic():
         ("clf", LogisticRegressionCV(
             Cs=np.logspace(-4, 2, 20),
             cv=5,
-            l1_ratios=(1,),        # pure L1 (replaces penalty="l1")
+            l1_ratios=(1,),        # pure L1 (replaces deprecated penalty="l1")
             solver="saga",
             max_iter=2000,
             class_weight="balanced",
             scoring="roc_auc",
-            use_legacy_attributes=False,
             n_jobs=-1,
         )),
     ])
