@@ -13,7 +13,7 @@ from sklearn.preprocessing import StandardScaler
 import joblib
 
 
-def build_prs_logistic(C: float = 1.0):
+def build_l2_logistic(C: float = 1.0):
     """Logistic regression on standardized PRS + covariates."""
     return Pipeline([
         ("scaler", StandardScaler()),
