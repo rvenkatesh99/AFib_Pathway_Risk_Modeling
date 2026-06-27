@@ -3,7 +3,7 @@ Train a single model. Run one process per model, then aggregate_results.py.
 
 Usage:
   python scripts/train_model.py \
-      --model {l2_logistic,l1_logistic,random_forest,global_attention,transformer,gnn} \
+      --model {covariates_logistic,l1_logistic,elasticnet,random_forest,global_attention,transformer,gnn} \
       --results_dir results/ \
       [--tune] \
       [--prs_col prs] \
@@ -34,8 +34,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.trainer import load_data, make_loaders, train, tune_hyperparameters
 from src.models.baseline import (
-    build_l2_logistic, build_l1_logistic, build_random_forest,
-    flatten_pathway_matrix, save_model,
+    build_l1_logistic, build_elasticnet, build_covariates_logistic,
+    build_random_forest, flatten_pathway_matrix, save_model,
 )
 from src.models.global_attention import GlobalPathwayAttentionModel
 from src.models.pathway_transformer import PathwayTransformer
@@ -55,7 +55,8 @@ from src.interpretability import (
 # automatically in tune_hyperparameters().
 
 HPARAM_GRIDS = {
-    "l2_logistic": {
+    # covariates_logistic, l1_logistic, elasticnet use internal CV — no outer grid.
+    "covariates_logistic": {
         "C": [0.01, 0.1, 1.0, 10.0],
     },
     "random_forest": {
@@ -63,7 +64,6 @@ HPARAM_GRIDS = {
         "max_depth":    [4, 6, 8],
         "min_samples_leaf": [20, 50, 100],
     },
-    # l1_logistic uses internal LogisticRegressionCV — no outer grid.
     "global_attention": {
         "embed_dim":    [32, 64, 128],
         "dropout":      [0.1, 0.2],
@@ -87,12 +87,13 @@ HPARAM_GRIDS = {
 
 # Default hyperparameters used when --tune is not set.
 DEFAULTS = {
-    "l2_logistic":    {"C": 1.0},
-    "l1_logistic":     {},
-    "random_forest":   {"n_estimators": 500, "max_depth": 6, "min_samples_leaf": 50},
-    "global_attention":{"embed_dim": 64, "dropout": 0.1, "lr": 1e-3, "weight_decay": 1e-4},
-    "transformer":     {"embed_dim": 64, "n_heads": 4,   "dropout": 0.1, "lr": 1e-3, "weight_decay": 1e-4},
-    "gnn":             {"embed_dim": 64, "dropout": 0.1, "lr": 1e-3, "weight_decay": 1e-4},
+    "covariates_logistic": {"C": 1.0},
+    "l1_logistic":         {},
+    "elasticnet":          {},
+    "random_forest":       {"n_estimators": 500, "max_depth": 6, "min_samples_leaf": 50},
+    "global_attention":    {"embed_dim": 64, "dropout": 0.1, "lr": 1e-3, "weight_decay": 1e-4},
+    "transformer":         {"embed_dim": 64, "n_heads": 4, "dropout": 0.1, "lr": 1e-3, "weight_decay": 1e-4},
+    "gnn":                 {"embed_dim": 64, "dropout": 0.1, "lr": 1e-3, "weight_decay": 1e-4},
 }
 
 # Final training settings (not tuned).
@@ -266,29 +267,46 @@ def sklearn_grid_search(build_fn, grid, train_X, train_y, val_X, val_y):
 
 # ── Sklearn runners ───────────────────────────────────────────────────────────
 
-def run_l2_logistic(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, out_dir, **_):
-    if args.prs_col and args.prs_col in cov_cols:
-        prs_i = cov_cols.index(args.prs_col)
-        slices = {s: np.column_stack([cov[i, prs_i], cov[i]])
-                  for s, i in [("tr", idx_tr), ("va", idx_va), ("te", idx_te)]}
-    else:
-        slices = {"tr": cov[idx_tr], "va": cov[idx_va], "te": cov[idx_te]}
+def run_covariates_logistic(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, out_dir, **_):
+    """L2 logistic regression on covariates only — clinical benchmark."""
+    slices = {"tr": cov[idx_tr], "va": cov[idx_va], "te": cov[idx_te]}
 
     if args.tune:
         best_hparams, search_results = sklearn_grid_search(
-            build_l2_logistic, HPARAM_GRIDS["l2_logistic"],
+            build_covariates_logistic, HPARAM_GRIDS["covariates_logistic"],
             slices["tr"], labels[idx_tr], slices["va"], labels[idx_va],
         )
     else:
-        best_hparams, search_results = DEFAULTS["l2_logistic"], None
+        best_hparams, search_results = DEFAULTS["covariates_logistic"], None
 
     final_X = np.concatenate([slices["tr"], slices["va"]])
     final_y = np.concatenate([labels[idx_tr], labels[idx_va]])
-    model = build_l2_logistic(**best_hparams)
+    model = build_covariates_logistic(**best_hparams)
     model.fit(final_X, final_y)
-    save_model(model, os.path.join(out_dir, "l2_logistic.pkl"))
+    save_model(model, os.path.join(out_dir, "covariates_logistic.pkl"))
     probs = model.predict_proba(slices["te"])[:, 1]
     save_outputs(out_dir, probs, labels[idx_te], {}, best_hparams, search_results, args.bootstrap_iters)
+
+
+def run_elasticnet(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, out_dir, **_):
+    """Elasticnet logistic regression on flattened pathway matrix + covariates."""
+    T = pw.shape[2] if pw.ndim == 3 else 1
+    flat = {s: flatten_pathway_matrix(pw[i]) for s, i in [("tr", idx_tr), ("va", idx_va), ("te", idx_te)]}
+    X = {s: np.concatenate([flat[s], cov[i]], axis=1)
+         for s, i in [("tr", idx_tr), ("va", idx_va), ("te", idx_te)]}
+
+    final_X = np.concatenate([X["tr"], X["va"]])
+    final_y = np.concatenate([labels[idx_tr], labels[idx_va]])
+    model = build_elasticnet()
+    model.fit(final_X, final_y)
+    best_C = float(np.atleast_1d(model.named_steps["clf"].C_)[0])
+    best_l1_ratio = float(np.atleast_1d(model.named_steps["clf"].l1_ratio_)[0])
+    print(f"  Best C (internal CV): {best_C:.5g}, l1_ratio: {best_l1_ratio:.3g}")
+    save_model(model, os.path.join(out_dir, "elasticnet.pkl"))
+    probs = model.predict_proba(X["te"])[:, 1]
+    ranking = get_l1_pathway_ranking(model, pw_names, T) if pw_names else {}
+    save_outputs(out_dir, probs, labels[idx_te], ranking,
+                 {"C": best_C, "l1_ratio": best_l1_ratio}, None, args.bootstrap_iters)
 
 
 def run_l1_logistic(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, out_dir, **_):
@@ -486,12 +504,13 @@ def run_gnn(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, o
 # ── Dispatch ──────────────────────────────────────────────────────────────────
 
 RUNNERS = {
-    "l2_logistic":    run_l2_logistic,
-    "l1_logistic":     run_l1_logistic,
-    "random_forest":   run_random_forest,
-    "global_attention":run_global_attention,
-    "transformer":     run_transformer,
-    "gnn":             run_gnn,
+    "covariates_logistic": run_covariates_logistic,
+    "l1_logistic":         run_l1_logistic,
+    "elasticnet":          run_elasticnet,
+    "random_forest":       run_random_forest,
+    "global_attention":    run_global_attention,
+    "transformer":         run_transformer,
+    "gnn":                 run_gnn,
 }
 
 

@@ -1,8 +1,9 @@
 """
 Baseline models:
-  1. Logistic regression on PRS + covariates (clinical benchmark)
-  2. L1-penalized logistic regression on flattened pathway matrix + covariates
+  1. L1-penalized logistic regression on flattened pathway matrix + covariates
+  2. Elasticnet logistic regression on flattened pathway matrix + covariates
   3. Random forest on pathway features + covariates
+  4. Covariates-only logistic regression (clinical benchmark)
 """
 
 import numpy as np
@@ -13,30 +14,47 @@ from sklearn.preprocessing import StandardScaler
 import joblib
 
 
-def build_l2_logistic(C: float = 1.0):
-    """Logistic regression on standardized PRS + covariates."""
-    return Pipeline([
-        ("scaler", StandardScaler()),
-        ("clf", LogisticRegression(
-            C=C, solver="lbfgs",
-            max_iter=1000, class_weight="balanced",
-        )),
-    ])
-
-
 def build_l1_logistic():
-    """L1-penalized logistic regression with 5-fold CV for C selection."""
+    """L1-penalized logistic regression; CV selects C."""
     return Pipeline([
         ("scaler", StandardScaler()),
         ("clf", LogisticRegressionCV(
             Cs=np.logspace(-4, 2, 20),
             cv=5,
-            l1_ratios=(1,),        # pure L1 (replaces deprecated penalty="l1")
+            l1_ratios=(1,),
             solver="saga",
             max_iter=2000,
             class_weight="balanced",
             scoring="roc_auc",
             n_jobs=-1,
+        )),
+    ])
+
+
+def build_elasticnet():
+    """Elasticnet logistic regression; CV jointly selects C and l1_ratio."""
+    return Pipeline([
+        ("scaler", StandardScaler()),
+        ("clf", LogisticRegressionCV(
+            Cs=np.logspace(-4, 2, 20),
+            cv=5,
+            l1_ratios=[0.1, 0.5, 0.7, 0.9, 0.95, 1.0],
+            solver="saga",
+            max_iter=2000,
+            class_weight="balanced",
+            scoring="roc_auc",
+            n_jobs=-1,
+        )),
+    ])
+
+
+def build_covariates_logistic(C: float = 1.0):
+    """L2 logistic regression on covariates only — clinical benchmark."""
+    return Pipeline([
+        ("scaler", StandardScaler()),
+        ("clf", LogisticRegression(
+            C=C, solver="lbfgs",
+            max_iter=1000, class_weight="balanced",
         )),
     ])
 
@@ -65,11 +83,7 @@ def flatten_pathway_matrix(pathway_matrix: np.ndarray) -> np.ndarray:
 
 
 def get_rf_pathway_importances(rf_model, pathway_names, n_features_per_pathway: int = 1):
-    """
-    Aggregate per-feature importances to per-pathway importances by summing
-    importance across features belonging to the same pathway.
-    Returns a dict {pathway_name: importance}.
-    """
+    """Aggregate per-feature importances to per-pathway level by summing."""
     importances = rf_model.feature_importances_
     K = len(pathway_names)
     T = n_features_per_pathway
@@ -78,10 +92,7 @@ def get_rf_pathway_importances(rf_model, pathway_names, n_features_per_pathway: 
 
 
 def get_l1_pathway_coefs(l1_pipeline, pathway_names, n_features_per_pathway: int = 1):
-    """
-    Aggregate L1 logistic regression coefficients to pathway level (L2 norm per pathway).
-    Returns a dict {pathway_name: coef_magnitude}.
-    """
+    """Aggregate L1/elasticnet coefficients to pathway level (L2 norm per pathway)."""
     coefs = l1_pipeline.named_steps["clf"].coef_[0]
     K = len(pathway_names)
     T = n_features_per_pathway
