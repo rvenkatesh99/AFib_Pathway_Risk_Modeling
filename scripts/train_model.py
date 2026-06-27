@@ -208,6 +208,18 @@ def _make_loaders(pw, cov, labels, idx_tr, idx_va, idx_te):
 
 # ── Output saving ─────────────────────────────────────────────────────────────
 
+class _NumpyEncoder(json.JSONEncoder):
+    """Convert numpy scalars/arrays to plain Python types for JSON serialization."""
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, (np.floating, np.float32, np.float64)):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
+
+
 def save_outputs(out_dir, probs, labels_test, ranking, best_hparams,
                  search_results=None, bootstrap_iters=1000):
     os.makedirs(out_dir, exist_ok=True)
@@ -217,15 +229,15 @@ def save_outputs(out_dir, probs, labels_test, ranking, best_hparams,
     metrics = compute_metrics(labels_test, probs)
     ci = bootstrap_metrics(labels_test, probs, n_iterations=bootstrap_iters)
     with open(os.path.join(out_dir, "metrics.json"), "w") as f:
-        json.dump({"metrics": metrics, "bootstrap_95ci": ci}, f, indent=2)
+        json.dump({"metrics": metrics, "bootstrap_95ci": ci}, f, indent=2, cls=_NumpyEncoder)
 
     with open(os.path.join(out_dir, "ranking.json"), "w") as f:
-        json.dump(ranking, f, indent=2)
+        json.dump(ranking, f, indent=2, cls=_NumpyEncoder)
     with open(os.path.join(out_dir, "best_hparams.json"), "w") as f:
-        json.dump(best_hparams, f, indent=2)
+        json.dump(best_hparams, f, indent=2, cls=_NumpyEncoder)
     if search_results is not None:
         with open(os.path.join(out_dir, "hparam_search.json"), "w") as f:
-            json.dump(search_results, f, indent=2)
+            json.dump(search_results, f, indent=2, cls=_NumpyEncoder)
 
     auroc = metrics["auroc"]
     ci_auroc = ci["auroc"]

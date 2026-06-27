@@ -18,7 +18,7 @@ def build_l2_logistic(C: float = 1.0):
     return Pipeline([
         ("scaler", StandardScaler()),
         ("clf", LogisticRegression(
-            penalty="l2", C=C, solver="lbfgs",
+            C=C, solver="lbfgs",
             max_iter=1000, class_weight="balanced",
         )),
     ])
