@@ -3,7 +3,7 @@ Train a single model. Run one process per model, then aggregate_results.py.
 
 Usage:
   python scripts/train_model.py \
-      --model {prs_logistic,l1_logistic,random_forest,global_attention,transformer,gnn} \
+      --model {l2_logistic,l1_logistic,random_forest,global_attention,transformer,gnn} \
       --results_dir results/ \
       [--tune] \
       [--prs_col prs] \
@@ -34,7 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.trainer import load_data, make_loaders, train, tune_hyperparameters
 from src.models.baseline import (
-    build_prs_logistic, build_l1_logistic, build_random_forest,
+    build_l2_logistic, build_l1_logistic, build_random_forest,
     flatten_pathway_matrix, save_model,
 )
 from src.models.global_attention import GlobalPathwayAttentionModel
@@ -51,7 +51,7 @@ from src.interpretability import (
 # automatically in tune_hyperparameters().
 
 HPARAM_GRIDS = {
-    "prs_logistic": {
+    "l2_logistic": {
         "C": [0.01, 0.1, 1.0, 10.0],
     },
     "random_forest": {
@@ -83,7 +83,7 @@ HPARAM_GRIDS = {
 
 # Default hyperparameters used when --tune is not set.
 DEFAULTS = {
-    "prs_logistic":    {"C": 1.0},
+    "l2_logistic":    {"C": 1.0},
     "l1_logistic":     {},
     "random_forest":   {"n_estimators": 500, "max_depth": 6, "min_samples_leaf": 50},
     "global_attention":{"embed_dim": 64, "dropout": 0.1, "lr": 1e-3, "weight_decay": 1e-4},
@@ -240,7 +240,7 @@ def sklearn_grid_search(build_fn, grid, train_X, train_y, val_X, val_y):
 
 # ── Sklearn runners ───────────────────────────────────────────────────────────
 
-def run_prs_logistic(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, out_dir, **_):
+def run_l2_logistic(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, out_dir, **_):
     if args.prs_col and args.prs_col in cov_cols:
         prs_i = cov_cols.index(args.prs_col)
         slices = {s: np.column_stack([cov[i, prs_i], cov[i]])
@@ -250,17 +250,17 @@ def run_prs_logistic(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, 
 
     if args.tune:
         best_hparams, search_results = sklearn_grid_search(
-            build_prs_logistic, HPARAM_GRIDS["prs_logistic"],
+            build_l2_logistic, HPARAM_GRIDS["l2_logistic"],
             slices["tr"], labels[idx_tr], slices["va"], labels[idx_va],
         )
     else:
-        best_hparams, search_results = DEFAULTS["prs_logistic"], None
+        best_hparams, search_results = DEFAULTS["l2_logistic"], None
 
     final_X = np.concatenate([slices["tr"], slices["va"]])
     final_y = np.concatenate([labels[idx_tr], labels[idx_va]])
-    model = build_prs_logistic(**best_hparams)
+    model = build_l2_logistic(**best_hparams)
     model.fit(final_X, final_y)
-    save_model(model, os.path.join(out_dir, "prs_logistic.pkl"))
+    save_model(model, os.path.join(out_dir, "l2_logistic.pkl"))
     probs = model.predict_proba(slices["te"])[:, 1]
     save_outputs(out_dir, probs, labels[idx_te], {}, best_hparams, search_results, args.bootstrap_iters)
 
@@ -434,7 +434,7 @@ def run_gnn(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, o
 # ── Dispatch ──────────────────────────────────────────────────────────────────
 
 RUNNERS = {
-    "prs_logistic":    run_prs_logistic,
+    "l2_logistic":    run_l2_logistic,
     "l1_logistic":     run_l1_logistic,
     "random_forest":   run_random_forest,
     "global_attention":run_global_attention,
