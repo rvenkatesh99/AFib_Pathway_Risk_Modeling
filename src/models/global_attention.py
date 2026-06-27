@@ -48,7 +48,9 @@ class GlobalPathwayAttentionModel(nn.Module):
         self.output_head = nn.Linear(head_in, 1)
 
     def get_attention_weights(self):
-        """Softmax-normalised pathway importance weights alpha (K,). Only valid when K > 0."""
+        """Softmax-normalised pathway importance weights alpha (K,). Returns None when K=0."""
+        if self.n_pathways == 0:
+            return None
         return torch.softmax(self.attention_logits, dim=0)
 
     def forward(self, pathway_features, covariates):
@@ -65,5 +67,7 @@ class GlobalPathwayAttentionModel(nn.Module):
         return self.output_head(combined).squeeze(-1)
 
     def get_pathway_importance_dict(self, pathway_names):
-        weights = self.get_attention_weights().detach().cpu().numpy()
-        return dict(zip(pathway_names, weights))
+        weights = self.get_attention_weights()
+        if weights is None:
+            return {}
+        return dict(zip(pathway_names, weights.detach().cpu().numpy()))

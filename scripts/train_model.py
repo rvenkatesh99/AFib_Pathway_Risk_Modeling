@@ -404,6 +404,8 @@ def run_transformer(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, i
 
     def post(model, test_loader, pw_names, out_dir):
         mean_attn = model.compute_mean_attention(test_loader, device="cpu")
+        if mean_attn is None:
+            return {}, None
         np.save(os.path.join(out_dir, "mean_attention.npy"), mean_attn.numpy())
         ranking = {name: float(mean_attn[-1, :, 0, i + 1].mean().item())
                    for i, name in enumerate(pw_names)}
