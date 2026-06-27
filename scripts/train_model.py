@@ -39,7 +39,11 @@ from src.models.baseline import (
 )
 from src.models.global_attention import GlobalPathwayAttentionModel
 from src.models.pathway_transformer import PathwayTransformer
-from src.models.pathway_gnn import PathwayGNN, build_string_edge_index, build_reactome_edge_index
+from src.models.pathway_gnn import (
+    PathwayGNN, build_string_edge_index, build_jaccard_edge_index,
+    build_score_correlation_edge_index, build_fully_connected_edge_index,
+    build_reactome_edge_index,
+)
 from src.metrics import compute_metrics, bootstrap_metrics
 from src.interpretability import (
     get_attention_pathway_ranking, get_l1_pathway_ranking, get_rf_pathway_ranking,
@@ -118,9 +122,19 @@ def parse_args():
                    help="Covariate columns to pass through the flat covariate encoder. "
                         "Default: all columns in the covariates file except the label. "
                         "PRS is included here (not in the pathway matrix) when --prs_col is set.")
-    p.add_argument("--string_edges", default=None)
-    p.add_argument("--reactome_edges", default=None)
-    p.add_argument("--pathway_gene_sets", default=None)
+    p.add_argument("--graph_method", default="jaccard",
+                   choices=["jaccard", "score_correlation", "string", "fully_connected"],
+                   help="GNN only. How to construct pathway graph edges.")
+    p.add_argument("--string_edges", default=None,
+                   help="GNN + graph_method=string: CSV with columns gene1,gene2,confidence (HGNC symbols).")
+    p.add_argument("--pathway_gene_sets", default=None,
+                   help="GNN + graph_method in {jaccard,string}: JSON mapping prefixed pathway name → list of gene symbols.")
+    p.add_argument("--jaccard_min_overlap", type=int, default=3,
+                   help="GNN + graph_method=jaccard: minimum shared genes for an edge.")
+    p.add_argument("--jaccard_min_score", type=float, default=0.1,
+                   help="GNN + graph_method=jaccard: minimum Jaccard similarity for an edge.")
+    p.add_argument("--corr_threshold", type=float, default=0.3,
+                   help="GNN + graph_method=score_correlation: absolute Pearson threshold for an edge.")
     p.add_argument("--bootstrap_iters", type=int, default=1000)
     return p.parse_args()
 
@@ -403,8 +417,29 @@ def run_transformer(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, i
 def run_gnn(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, out_dir, **_):
     import pandas as pd
     K, T, C = _dims(pw, cov)
+    method = args.graph_method
 
-    if args.string_edges and args.pathway_gene_sets:
+    print(f"  Graph method: {method}")
+
+    if method == "jaccard":
+        if not args.pathway_gene_sets:
+            raise ValueError("--graph_method jaccard requires --pathway_gene_sets")
+        with open(args.pathway_gene_sets) as f:
+            gene_sets = {k: set(v) for k, v in json.load(f).items()}
+        edge_index = build_jaccard_edge_index(
+            gene_sets, pw_names,
+            min_overlap=args.jaccard_min_overlap,
+            min_jaccard=args.jaccard_min_score,
+        )
+
+    elif method == "score_correlation":
+        edge_index = build_score_correlation_edge_index(
+            pw[idx_tr], pw_names, threshold=args.corr_threshold,
+        )
+
+    elif method == "string":
+        if not args.string_edges or not args.pathway_gene_sets:
+            raise ValueError("--graph_method string requires --string_edges and --pathway_gene_sets")
         with open(args.pathway_gene_sets) as f:
             gene_sets = {k: set(v) for k, v in json.load(f).items()}
         ppi_df = pd.read_csv(args.string_edges)
@@ -412,15 +447,18 @@ def run_gnn(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, o
             gene_sets, list(zip(ppi_df.gene1, ppi_df.gene2, ppi_df.confidence)),
             pathway_names=pw_names,
         )
-    elif args.reactome_edges:
-        react_df = pd.read_csv(args.reactome_edges)
-        edge_index = build_reactome_edge_index(
-            list(zip(react_df.parent, react_df.child)), pw_names)
-    else:
-        raise ValueError("GNN requires --string_edges + --pathway_gene_sets, or --reactome_edges")
 
-    print(f"  Graph: {K} nodes, {edge_index.shape[1]//2} undirected edges")
-    fixed = dict(n_pathways=K, pathway_input_dim=T, covariate_dim=C, edge_index=edge_index)  # noqa: F821
+    elif method == "fully_connected":
+        edge_index = build_fully_connected_edge_index(K)
+
+    else:
+        raise ValueError(f"Unknown graph method: {method}")
+
+    n_edges = edge_index.shape[1] // 2
+    print(f"  Graph: {K} nodes, {n_edges} undirected edges "
+          f"({n_edges / max(K*(K-1)//2, 1)*100:.1f}% of possible)")
+
+    fixed = dict(n_pathways=K, pathway_input_dim=T, covariate_dim=C, edge_index=edge_index)
 
     def post(model, test_loader, pw_names, out_dir):
         ranking = compute_gradcam_pathway_ranking(model, test_loader, pw_names, device="cpu")

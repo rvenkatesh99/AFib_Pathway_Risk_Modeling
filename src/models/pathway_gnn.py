@@ -266,17 +266,105 @@ def build_string_edge_index(
     return torch.tensor([src, dst], dtype=torch.long)
 
 
+def build_jaccard_edge_index(
+    pathway_gene_sets: dict,
+    pathway_names: list,
+    min_overlap: int = 3,
+    min_jaccard: float = 0.1,
+) -> torch.Tensor:
+    """
+    Build edge_index from gene set Jaccard overlap.
+
+    Two pathways are connected if they share >= min_overlap genes AND their
+    Jaccard similarity >= min_jaccard.  Uses the same gene sets that defined
+    the pathway scores — no external database required.
+
+    pathway_gene_sets: {pathway_name: set_of_gene_symbols}
+    pathway_names: ordered list of pathway names (determines node indices)
+    """
+    name_to_idx = {n: i for i, n in enumerate(pathway_names)}
+    sets = {name_to_idx[n]: set(g) for n, g in pathway_gene_sets.items() if n in name_to_idx}
+    K = len(pathway_names)
+
+    src, dst = [], []
+    idxs = sorted(sets)
+    for i, p1 in enumerate(idxs):
+        for p2 in idxs[i + 1:]:
+            inter = len(sets[p1] & sets[p2])
+            if inter < min_overlap:
+                continue
+            union = len(sets[p1] | sets[p2])
+            if union == 0:
+                continue
+            if inter / union >= min_jaccard:
+                src.extend([p1, p2])
+                dst.extend([p2, p1])
+
+    if not src:
+        return torch.zeros(2, 0, dtype=torch.long)
+    return torch.tensor([src, dst], dtype=torch.long)
+
+
+def build_score_correlation_edge_index(
+    pw_train: "np.ndarray",
+    pathway_names: list,
+    threshold: float = 0.3,
+) -> torch.Tensor:
+    """
+    Build edge_index from pairwise Pearson correlation of pathway scores
+    across training individuals.  Computed on the training set only to
+    avoid leakage.
+
+    Two pathways are connected if |correlation| >= threshold.
+
+    pw_train: (N_train, K) or (N_train, K, T) array of pathway scores
+    pathway_names: ordered list of K pathway names
+    threshold: absolute correlation cutoff for an edge
+    """
+    import numpy as np
+    if pw_train.ndim == 3:
+        # Average across T features per pathway
+        pw_train = pw_train.mean(axis=2)
+
+    # (N, K) → correlation matrix (K, K)
+    # np.corrcoef expects (K, N)
+    corr = np.corrcoef(pw_train.T)
+    K = len(pathway_names)
+
+    src, dst = [], []
+    for i in range(K):
+        for j in range(i + 1, K):
+            if abs(corr[i, j]) >= threshold:
+                src.extend([i, j])
+                dst.extend([j, i])
+
+    if not src:
+        return torch.zeros(2, 0, dtype=torch.long)
+    return torch.tensor([src, dst], dtype=torch.long)
+
+
+def build_fully_connected_edge_index(n_pathways: int) -> torch.Tensor:
+    """
+    Fully connected graph (ablation baseline).
+    Tests whether graph topology matters at all vs. pure node aggregation.
+    """
+    idx = torch.arange(n_pathways)
+    src = idx.repeat_interleave(n_pathways)
+    dst = idx.repeat(n_pathways)
+    mask = src != dst
+    return torch.stack([src[mask], dst[mask]], dim=0)
+
+
 def build_reactome_edge_index(
     hierarchy_edges: list,
     pathway_names: list,
 ) -> torch.Tensor:
     """
     Build edge_index from Reactome parent-child hierarchy.
+    Note: only connects Reactome pathways — KEGG/GOBP nodes will be isolated.
 
     hierarchy_edges: list of (parent_name, child_name) tuples
     pathway_names: ordered list of pathway names
-
-    Returns edge_index (2, E) LongTensor (bidirectional).
     """
     name_to_idx = {n: i for i, n in enumerate(pathway_names)}
     src, dst = [], []
