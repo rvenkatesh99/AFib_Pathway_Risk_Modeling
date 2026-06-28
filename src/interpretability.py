@@ -21,16 +21,22 @@ def get_attention_pathway_ranking(model, pathway_names: list) -> dict:
     return dict(sorted(importance.items(), key=lambda x: -x[1]))
 
 
-def get_rf_pathway_ranking(rf_model, pathway_names: list, n_features_per_pathway: int = 1) -> dict:
+def get_rf_pathway_ranking(rf_model, pathway_names: list, n_features_per_pathway: int = 1,
+                           covariate_names=None):
+    """Returns (pathway_ranking, covariate_ranking) — both sorted descending."""
     from src.models.baseline import get_rf_pathway_importances
-    return dict(sorted(get_rf_pathway_importances(rf_model, pathway_names, n_features_per_pathway).items(),
-                        key=lambda x: -x[1]))
+    pw_dict, cov_dict = get_rf_pathway_importances(rf_model, pathway_names, n_features_per_pathway, covariate_names)
+    return (dict(sorted(pw_dict.items(), key=lambda x: -x[1])),
+            dict(sorted(cov_dict.items(), key=lambda x: -x[1])))
 
 
-def get_l1_pathway_ranking(l1_pipeline, pathway_names: list, n_features_per_pathway: int = 1) -> dict:
+def get_l1_pathway_ranking(l1_pipeline, pathway_names: list, n_features_per_pathway: int = 1,
+                           covariate_names=None):
+    """Returns (pathway_ranking, covariate_ranking) — both sorted descending."""
     from src.models.baseline import get_l1_pathway_coefs
-    return dict(sorted(get_l1_pathway_coefs(l1_pipeline, pathway_names, n_features_per_pathway).items(),
-                        key=lambda x: -x[1]))
+    pw_dict, cov_dict = get_l1_pathway_coefs(l1_pipeline, pathway_names, n_features_per_pathway, covariate_names)
+    return (dict(sorted(pw_dict.items(), key=lambda x: -x[1])),
+            dict(sorted(cov_dict.items(), key=lambda x: -x[1])))
 
 
 def spearman_rank_concordance(rankings: dict) -> dict:

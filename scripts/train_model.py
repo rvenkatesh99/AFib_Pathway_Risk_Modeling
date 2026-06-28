@@ -65,23 +65,23 @@ HPARAM_GRIDS = {
         "min_samples_leaf": [20, 50, 100],
     },
     "global_attention": {
-        "embed_dim":    [32, 64, 128],
+        "embed_dim":    [64, 128],
         "dropout":      [0.1, 0.2],
         "lr":           [1e-3, 5e-4],
-        "weight_decay": [1e-4, 1e-3],
+        "weight_decay": [1e-4],
     },
     "transformer": {
-        "embed_dim":    [32, 64, 128],
+        "embed_dim":    [64, 128],
         "n_heads":      [2, 4],
         "dropout":      [0.1, 0.2],
         "lr":           [1e-3, 5e-4],
-        "weight_decay": [1e-4, 1e-3],
+        "weight_decay": [1e-4],
     },
     "gnn": {
-        "embed_dim":    [32, 64, 128],
+        "embed_dim":    [64, 128],
         "dropout":      [0.1, 0.2],
         "lr":           [1e-3, 5e-4],
-        "weight_decay": [1e-4, 1e-3],
+        "weight_decay": [1e-4],
     },
 }
 
@@ -157,8 +157,11 @@ def _resolve_pathway_cols(args, all_pw_names):
     if args.pathway_cols == [""]:
         return []                                    # explicit covariates-only
 
-    if len(args.pathway_cols) == 1 and os.path.isfile(args.pathway_cols[0]):
-        with open(args.pathway_cols[0]) as f:
+    if len(args.pathway_cols) == 1 and (args.pathway_cols[0].endswith(".txt") or os.sep in args.pathway_cols[0]):
+        p = args.pathway_cols[0]
+        if not os.path.isfile(p):
+            raise FileNotFoundError(f"--pathway_cols file not found: {p!r}")
+        with open(p) as f:
             requested = [l.strip() for l in f if l.strip()]
     else:
         requested = args.pathway_cols
@@ -222,7 +225,7 @@ class _NumpyEncoder(json.JSONEncoder):
 
 
 def save_outputs(out_dir, probs, labels_test, ranking, best_hparams,
-                 search_results=None, bootstrap_iters=1000):
+                 search_results=None, bootstrap_iters=1000, covariate_ranking=None):
     os.makedirs(out_dir, exist_ok=True)
     np.save(os.path.join(out_dir, "probs_test.npy"), probs)
     np.save(os.path.join(out_dir, "labels_test.npy"), labels_test)
@@ -232,8 +235,9 @@ def save_outputs(out_dir, probs, labels_test, ranking, best_hparams,
     with open(os.path.join(out_dir, "metrics.json"), "w") as f:
         json.dump({"metrics": metrics, "bootstrap_95ci": ci}, f, indent=2, cls=_NumpyEncoder)
 
+    combined_ranking = {**ranking, **(covariate_ranking or {})}
     with open(os.path.join(out_dir, "ranking.json"), "w") as f:
-        json.dump(ranking, f, indent=2, cls=_NumpyEncoder)
+        json.dump(combined_ranking, f, indent=2, cls=_NumpyEncoder)
     with open(os.path.join(out_dir, "best_hparams.json"), "w") as f:
         json.dump(best_hparams, f, indent=2, cls=_NumpyEncoder)
     if search_results is not None:
@@ -304,9 +308,10 @@ def run_elasticnet(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, id
     print(f"  Best C (internal CV): {best_C:.5g}, l1_ratio: {best_l1_ratio:.3g}")
     save_model(model, os.path.join(out_dir, "elasticnet.pkl"))
     probs = model.predict_proba(X["te"])[:, 1]
-    ranking = get_l1_pathway_ranking(model, pw_names, T) if pw_names else {}
+    ranking, cov_ranking = get_l1_pathway_ranking(model, pw_names, T, cov_cols) if pw_names else ({}, {})
     save_outputs(out_dir, probs, labels[idx_te], ranking,
-                 {"C": best_C, "l1_ratio": best_l1_ratio}, None, args.bootstrap_iters)
+                 {"C": best_C, "l1_ratio": best_l1_ratio}, None, args.bootstrap_iters,
+                 covariate_ranking=cov_ranking)
 
 
 def run_l1_logistic(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, out_dir, **_):
@@ -324,8 +329,9 @@ def run_l1_logistic(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, i
     print(f"  Best C (internal CV): {best_C:.5g}")
     save_model(model, os.path.join(out_dir, "l1_logistic.pkl"))
     probs = model.predict_proba(X["te"])[:, 1]
-    ranking = get_l1_pathway_ranking(model, pw_names, T) if pw_names else {}
-    save_outputs(out_dir, probs, labels[idx_te], ranking, {"C": best_C}, None, args.bootstrap_iters)
+    ranking, cov_ranking = get_l1_pathway_ranking(model, pw_names, T, cov_cols) if pw_names else ({}, {})
+    save_outputs(out_dir, probs, labels[idx_te], ranking, {"C": best_C}, None, args.bootstrap_iters,
+                 covariate_ranking=cov_ranking)
 
 
 def run_random_forest(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, out_dir, **_):
@@ -348,8 +354,9 @@ def run_random_forest(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va,
     model.fit(final_X, final_y)
     save_model(model, os.path.join(out_dir, "random_forest.pkl"))
     probs = model.predict_proba(X["te"])[:, 1]
-    ranking = get_rf_pathway_ranking(model, pw_names, T) if pw_names else {}
-    save_outputs(out_dir, probs, labels[idx_te], ranking, best_hparams, search_results, args.bootstrap_iters)
+    ranking, cov_ranking = get_rf_pathway_ranking(model, pw_names, T, cov_cols) if pw_names else ({}, {})
+    save_outputs(out_dir, probs, labels[idx_te], ranking, best_hparams, search_results, args.bootstrap_iters,
+                 covariate_ranking=cov_ranking)
 
 
 # ── Neural runners ────────────────────────────────────────────────────────────

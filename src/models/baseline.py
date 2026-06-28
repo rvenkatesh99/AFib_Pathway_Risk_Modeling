@@ -82,24 +82,40 @@ def flatten_pathway_matrix(pathway_matrix: np.ndarray) -> np.ndarray:
     return pathway_matrix
 
 
-def get_rf_pathway_importances(rf_model, pathway_names, n_features_per_pathway: int = 1):
-    """Aggregate per-feature importances to per-pathway level by summing."""
+def get_rf_pathway_importances(rf_model, pathway_names, n_features_per_pathway: int = 1,
+                               covariate_names=None):
+    """Aggregate per-feature importances to per-pathway level by summing.
+    Returns (pathway_dict, covariate_dict)."""
     importances = rf_model.feature_importances_
     K = len(pathway_names)
     T = n_features_per_pathway
-    pathway_importances = importances.reshape(K, T).sum(axis=1)
-    return dict(zip(pathway_names, pathway_importances))
+    pathway_importances = importances[:K * T].reshape(K, T).sum(axis=1)
+    pathway_dict = dict(zip(pathway_names, pathway_importances))
+    if covariate_names:
+        cov_importances = importances[K * T: K * T + len(covariate_names)]
+        cov_dict = dict(zip(covariate_names, cov_importances))
+    else:
+        cov_dict = {}
+    return pathway_dict, cov_dict
 
 
-def get_l1_pathway_coefs(l1_pipeline, pathway_names, n_features_per_pathway: int = 1):
-    """Aggregate L1/elasticnet coefficients to pathway level (L2 norm per pathway)."""
+def get_l1_pathway_coefs(l1_pipeline, pathway_names, n_features_per_pathway: int = 1,
+                         covariate_names=None):
+    """Aggregate L1/elasticnet coefficients to pathway level (L2 norm per pathway).
+    Returns (pathway_dict, covariate_dict)."""
     coefs = l1_pipeline.named_steps["clf"].coef_[0]
     K = len(pathway_names)
     T = n_features_per_pathway
     n_pathway_features = K * T
     pathway_coefs = coefs[:n_pathway_features].reshape(K, T)
     magnitudes = np.linalg.norm(pathway_coefs, axis=1)
-    return dict(zip(pathway_names, magnitudes))
+    pathway_dict = dict(zip(pathway_names, magnitudes))
+    if covariate_names:
+        cov_coefs = np.abs(coefs[n_pathway_features: n_pathway_features + len(covariate_names)])
+        cov_dict = dict(zip(covariate_names, cov_coefs))
+    else:
+        cov_dict = {}
+    return pathway_dict, cov_dict
 
 
 def save_model(model, path: str):
