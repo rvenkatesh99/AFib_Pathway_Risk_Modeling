@@ -497,6 +497,13 @@ def run_gnn(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, o
     print(f"  Graph: {K} nodes, {n_edges} undirected edges "
           f"({n_edges / max(K*(K-1)//2, 1)*100:.1f}% of possible)")
 
+    # Save graph structure and pathway names for downstream plotting
+    os.makedirs(out_dir, exist_ok=True)
+    np.save(os.path.join(out_dir, "edge_index.npy"), edge_index.numpy())
+    with open(os.path.join(out_dir, "graph_info.json"), "w") as f:
+        json.dump({"graph_method": method, "n_nodes": K, "n_edges": n_edges,
+                   "pathway_names": pw_names}, f, indent=2)
+
     fixed = dict(n_pathways=K, pathway_input_dim=T, covariate_dim=C, edge_index=edge_index)
 
     def post(model, test_loader, pw_names, out_dir):

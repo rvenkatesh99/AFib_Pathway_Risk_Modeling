@@ -161,6 +161,66 @@ def main():
         if ranking:
             rankings[(fs, model)] = ranking
 
+    # ── Delta AUROC vs covariates-only baseline ───────────────────────────────
+    # Baseline: covariates_logistic from covs_only (or best available fallback)
+    baseline_auroc = None
+    for cov_fs in ["covs_only"]:
+        key = (cov_fs, "covariates_logistic")
+        row = next((r for r in metrics_rows
+                    if r["feature_set"] == cov_fs and r["model"] == "covariates_logistic"), None)
+        if row:
+            baseline_auroc = row["auroc"]
+            print(f"\nBaseline (covariates_logistic / {cov_fs}): AUROC = {baseline_auroc:.4f}")
+            break
+
+    for row in metrics_rows:
+        if baseline_auroc is not None:
+            row["delta_auroc_vs_baseline"] = (
+                row["auroc"] - baseline_auroc if row["auroc"] is not None else None
+            )
+        # Per-model delta: improvement over same model run on covs_only
+        cov_row = next((r for r in metrics_rows
+                        if r["feature_set"] == "covs_only" and r["model"] == row["model"]), None)
+        row["delta_auroc_vs_covs_only"] = (
+            row["auroc"] - cov_row["auroc"]
+            if cov_row and row["auroc"] is not None and cov_row["auroc"] is not None
+            else None
+        )
+
+    # ── Sparsity for l1_logistic and elasticnet ───────────────────────────────
+    SPARSE_MODELS = {"l1_logistic", "elasticnet"}
+    sparsity_rows = []
+    for fs, model, run_dir in runs:
+        if model not in SPARSE_MODELS:
+            continue
+        rank_path = os.path.join(run_dir, "ranking.json")
+        if not os.path.isfile(rank_path):
+            continue
+        with open(rank_path) as f:
+            ranking = json.load(f)
+        # Separate pathway features (have __ prefix) from covariates
+        pathway_scores = {k: v for k, v in ranking.items() if "__" in k}
+        cov_scores     = {k: v for k, v in ranking.items() if "__" not in k}
+        n_pw_total     = len(pathway_scores)
+        n_pw_nonzero   = sum(1 for v in pathway_scores.values() if v > 0)
+        n_cov_nonzero  = sum(1 for v in cov_scores.values() if v > 0)
+        sparsity_rows.append({
+            "feature_set":       fs,
+            "model":             model,
+            "n_pathways_total":  n_pw_total,
+            "n_pathways_nonzero": n_pw_nonzero,
+            "pct_pathways_selected": round(100 * n_pw_nonzero / n_pw_total, 1) if n_pw_total else None,
+            "n_covariates_nonzero": n_cov_nonzero,
+        })
+
+    if sparsity_rows:
+        sparsity_df = pd.DataFrame(sparsity_rows).sort_values(["model", "feature_set"])
+        sparsity_path = os.path.join(out_dir, "sparsity_summary.csv")
+        sparsity_df.to_csv(sparsity_path, index=False)
+        print(f"\nSparsity summary (L1 / elasticnet pathway selection):")
+        print(sparsity_df.to_string(index=False))
+        print(f"\nWrote {sparsity_path}")
+
     # ── Metrics summary CSV ───────────────────────────────────────────────────
     metrics_df = pd.DataFrame(metrics_rows)
     metrics_df = metrics_df.sort_values(["feature_set", "model"])
@@ -172,6 +232,13 @@ def main():
     pivot = metrics_df.pivot(index="feature_set", columns="model", values="auroc")
     print(f"\nAUROC by feature set and model:")
     print(pivot.to_string(float_format=lambda x: f"{x:.4f}"))
+
+    if baseline_auroc is not None:
+        delta_pivot = metrics_df.pivot(
+            index="feature_set", columns="model", values="delta_auroc_vs_baseline"
+        )
+        print(f"\nDelta AUROC vs covariates_logistic baseline:")
+        print(delta_pivot.to_string(float_format=lambda x: f"{x:+.4f}"))
 
     # ── DeLong pairwise within each feature set ───────────────────────────────
     delong_rows = []

@@ -252,7 +252,92 @@ def plot_cross_tissue_heatmap(ranking_df, model, top_n, out_path):
     _save(fig, out_path)
 
 
-# ── 5. DeLong p-value heatmap ─────────────────────────────────────────────────
+# ── 5. Delta AUROC vs baseline ───────────────────────────────────────────────
+
+def plot_delta_auroc(metrics_df, feature_sets, out_path):
+    """
+    Grouped bar chart of delta AUROC vs covariates_logistic baseline.
+    Positive = improvement over baseline; zero line marked.
+    """
+    if "delta_auroc_vs_baseline" not in metrics_df.columns:
+        print("  Skipping delta AUROC plot: column not found (rerun aggregate_results.py)")
+        return
+
+    models = _model_order(metrics_df["model"].unique())
+    # Exclude covs_only/covariates_logistic from feature sets shown (delta is trivially 0)
+    fs_show = [fs for fs in feature_sets if fs != "covs_only"]
+    if not fs_show:
+        return
+
+    n_fs = len(fs_show)
+    n_m  = len(models)
+    x       = np.arange(n_fs)
+    width   = 0.8 / n_m
+    offsets = np.linspace(-(0.8 - width) / 2, (0.8 - width) / 2, n_m)
+
+    fig, ax = plt.subplots(figsize=(max(8, n_fs * 1.4), 5))
+
+    for i, model in enumerate(models):
+        sub = metrics_df[metrics_df["model"] == model].set_index("feature_set")
+        deltas = [sub.loc[fs, "delta_auroc_vs_baseline"] if fs in sub.index else np.nan
+                  for fs in fs_show]
+        ax.bar(x + offsets[i], deltas, width,
+               color=MODEL_COLORS.get(model, "#aaaaaa"), alpha=0.85,
+               label=model.replace("_", " "), zorder=2)
+
+    ax.axhline(0, color="black", linewidth=0.9, linestyle="--", alpha=0.5)
+    ax.set_xticks(x)
+    ax.set_xticklabels([fs.replace("_covs", "").replace("_", "\n") for fs in fs_show], fontsize=8)
+    ax.set_ylabel("Δ AUROC vs covariates_logistic")
+    ax.set_title("Pathway contribution beyond covariate baseline", fontsize=11, fontweight="bold")
+    ax.legend(fontsize=7, frameon=False, bbox_to_anchor=(1.01, 1), loc="upper left",
+              title="Model", title_fontsize=8)
+    _save(fig, out_path)
+
+
+# ── 6. Sparsity — pathway selection by L1 / elasticnet ───────────────────────
+
+def plot_sparsity(sparsity_df, out_path):
+    """
+    Bar chart showing % of pathways selected (non-zero coefficient) per
+    (feature_set, model) for l1_logistic and elasticnet.
+    """
+    if sparsity_df is None or sparsity_df.empty:
+        print("  Skipping sparsity plot: no sparsity_summary.csv found")
+        return
+
+    models  = sparsity_df["model"].unique()
+    fs_list = sorted(sparsity_df["feature_set"].unique())
+    n_fs    = len(fs_list)
+
+    fig, axes = plt.subplots(1, len(models), figsize=(max(6, n_fs * 1.0) * len(models), 4),
+                              sharey=True, squeeze=False)
+
+    for ax, model in zip(axes[0], models):
+        sub = sparsity_df[sparsity_df["model"] == model].set_index("feature_set")
+        pcts = [sub.loc[fs, "pct_pathways_selected"] if fs in sub.index else np.nan
+                for fs in fs_list]
+        colors = [MODEL_COLORS.get(model, "#aaaaaa")] * n_fs
+        bars = ax.bar(range(n_fs), pcts, color=colors, alpha=0.8, edgecolor="white")
+
+        for bar, pct in zip(bars, pcts):
+            if not np.isnan(pct):
+                ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.5,
+                        f"{pct:.1f}%", ha="center", va="bottom", fontsize=7)
+
+        ax.set_xticks(range(n_fs))
+        ax.set_xticklabels([fs.replace("_covs", "").replace("_", "\n") for fs in fs_list],
+                           fontsize=7)
+        ax.set_ylabel("% pathways selected")
+        ax.set_ylim(0, 105)
+        ax.set_title(model.replace("_", " "), fontsize=9, fontweight="bold")
+
+    fig.suptitle("Pathway sparsity — % features with non-zero coefficient",
+                 fontsize=11, fontweight="bold")
+    _save(fig, out_path)
+
+
+# ── 7. DeLong p-value heatmap ─────────────────────────────────────────────────
 
 def plot_delong_heatmap(delong_df, feature_set, out_path):
     sub = delong_df[delong_df["feature_set"] == feature_set]
@@ -313,9 +398,10 @@ def main():
     os.makedirs(args.out_dir, exist_ok=True)
 
     # ── Load data ─────────────────────────────────────────────────────────────
-    metrics_path = os.path.join(args.agg_dir, "metrics_summary.csv")
-    rank_path    = os.path.join(args.agg_dir, "ranking_percentile.csv")
-    delong_path  = os.path.join(args.agg_dir, "delong_summary.csv")
+    metrics_path  = os.path.join(args.agg_dir, "metrics_summary.csv")
+    rank_path     = os.path.join(args.agg_dir, "ranking_percentile.csv")
+    delong_path   = os.path.join(args.agg_dir, "delong_summary.csv")
+    sparsity_path = os.path.join(args.agg_dir, "sparsity_summary.csv")
 
     if not os.path.isfile(metrics_path):
         raise FileNotFoundError(f"metrics_summary.csv not found in {args.agg_dir}")
@@ -330,6 +416,10 @@ def main():
     if os.path.isfile(delong_path):
         delong_df = pd.read_csv(delong_path)
 
+    sparsity_df = None
+    if os.path.isfile(sparsity_path):
+        sparsity_df = pd.read_csv(sparsity_path)
+
     # Determine feature sets and models to plot
     feature_sets = args.feature_sets or sorted(metrics_df["feature_set"].unique())
     models       = _model_order(metrics_df["model"].unique())
@@ -337,7 +427,7 @@ def main():
     print(f"Feature sets : {feature_sets}")
     print(f"Models       : {models}")
 
-    # ── 1. AUROC grouped bar ──────────────────────────────────────────────────
+    # ── 1. AUROC grouped bar ─────────────────────────────────────────────────
     print("Plotting AUROC comparison...")
     plot_auroc_comparison(
         metrics_df, feature_sets,
@@ -374,14 +464,28 @@ def main():
                 os.path.join(args.out_dir, f"04_cross_tissue_{model}.pdf"),
             )
 
-    # ── 5. DeLong heatmap (one per feature set) ───────────────────────────────
+    # ── 5. Delta AUROC vs baseline ────────────────────────────────────────────
+    print("Plotting delta AUROC...")
+    plot_delta_auroc(
+        metrics_df, feature_sets,
+        os.path.join(args.out_dir, "05_delta_auroc.pdf"),
+    )
+
+    # ── 6. Sparsity ───────────────────────────────────────────────────────────
+    print("Plotting sparsity...")
+    plot_sparsity(
+        sparsity_df,
+        os.path.join(args.out_dir, "06_sparsity.pdf"),
+    )
+
+    # ── 7. DeLong heatmap (one per feature set) ───────────────────────────────
     if delong_df is not None:
         for fs in feature_sets:
             tag = fs.replace("_covs", "").replace("_", "-")
             print(f"Plotting DeLong heatmap: {fs}...")
             plot_delong_heatmap(
                 delong_df, fs,
-                os.path.join(args.out_dir, f"05_delong_{tag}.pdf"),
+                os.path.join(args.out_dir, f"07_delong_{tag}.pdf"),
             )
 
     print(f"\nAll figures saved to {args.out_dir}/")
