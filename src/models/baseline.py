@@ -19,11 +19,12 @@ def build_l1_logistic():
     return Pipeline([
         ("scaler", StandardScaler()),
         ("clf", LogisticRegressionCV(
-            Cs=np.logspace(-4, 2, 20),
+            Cs=np.logspace(-4, 2, 10),
             cv=5,
             l1_ratios=(1,),
             solver="saga",
-            max_iter=2000,
+            max_iter=1000,
+            tol=1e-3,
             class_weight="balanced",
             scoring="roc_auc",
             n_jobs=-1,
@@ -36,11 +37,12 @@ def build_elasticnet():
     return Pipeline([
         ("scaler", StandardScaler()),
         ("clf", LogisticRegressionCV(
-            Cs=np.logspace(-4, 2, 20),
+            Cs=np.logspace(-4, 2, 10),
             cv=5,
-            l1_ratios=[0.1, 0.5, 0.7, 0.9, 0.95, 1.0],
+            l1_ratios=[0.1, 0.5, 0.9, 1.0],
             solver="saga",
-            max_iter=2000,
+            max_iter=1000,
+            tol=1e-3,
             class_weight="balanced",
             scoring="roc_auc",
             n_jobs=-1,
