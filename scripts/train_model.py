@@ -329,7 +329,7 @@ def run_l1_logistic(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, i
     print(f"  Best C (internal CV): {best_C:.5g}")
     save_model(model, os.path.join(out_dir, "l1_logistic.pkl"))
     probs = model.predict_proba(X["te"])[:, 1]
-    ranking, cov_ranking = get_l1_pathway_ranking(model, pw_names, T, cov_cols) if pw_names else ({}, {})
+    ranking, cov_ranking = get_l1_pathway_ranking(model, pw_names, T, cov_cols)
     save_outputs(out_dir, probs, labels[idx_te], ranking, {"C": best_C}, None, args.bootstrap_iters,
                  covariate_ranking=cov_ranking)
 
@@ -354,7 +354,7 @@ def run_random_forest(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va,
     model.fit(final_X, final_y)
     save_model(model, os.path.join(out_dir, "random_forest.pkl"))
     probs = model.predict_proba(X["te"])[:, 1]
-    ranking, cov_ranking = get_rf_pathway_ranking(model, pw_names, T, cov_cols) if pw_names else ({}, {})
+    ranking, cov_ranking = get_rf_pathway_ranking(model, pw_names, T, cov_cols)
     save_outputs(out_dir, probs, labels[idx_te], ranking, best_hparams, search_results, args.bootstrap_iters,
                  covariate_ranking=cov_ranking)
 

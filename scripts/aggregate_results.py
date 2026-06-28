@@ -49,16 +49,31 @@ def parse_args():
 
 
 def discover_runs(results_dir):
-    """Return list of (feature_set, model, run_dir) tuples for completed runs."""
+    """Return list of (feature_set, model, run_dir) tuples for completed runs.
+
+    Handles two directory layouts:
+      - results_dir/{feature_set}/{model}/metrics.json  (multi-feature-set)
+      - results_dir/{model}/metrics.json                (single feature set)
+    """
     runs = []
-    for fs in sorted(os.listdir(results_dir)):
-        fs_dir = os.path.join(results_dir, fs)
-        if not os.path.isdir(fs_dir):
+    feature_set_name = os.path.basename(results_dir.rstrip("/"))
+
+    for entry in sorted(os.listdir(results_dir)):
+        entry_dir = os.path.join(results_dir, entry)
+        if not os.path.isdir(entry_dir):
             continue
-        for model in sorted(os.listdir(fs_dir)):
-            run_dir = os.path.join(fs_dir, model)
-            if os.path.isfile(os.path.join(run_dir, "metrics.json")):
-                runs.append((fs, model, run_dir))
+
+        # Single-feature-set layout: results_dir/model/metrics.json
+        if os.path.isfile(os.path.join(entry_dir, "metrics.json")):
+            runs.append((feature_set_name, entry, entry_dir))
+            continue
+
+        # Multi-feature-set layout: results_dir/feature_set/model/metrics.json
+        for model in sorted(os.listdir(entry_dir)):
+            run_dir = os.path.join(entry_dir, model)
+            if os.path.isdir(run_dir) and os.path.isfile(os.path.join(run_dir, "metrics.json")):
+                runs.append((entry, model, run_dir))
+
     return runs
 
 

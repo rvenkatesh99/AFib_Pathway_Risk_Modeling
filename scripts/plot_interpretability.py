@@ -1,28 +1,26 @@
 """
 Interpretability plots for pathway risk modeling.
 
+Reads output from aggregate_results.py:
+  - metrics_summary.csv
+  - ranking_percentile.csv
+
 Produces:
-  1. Global attention weights — lollipop chart of top-K pathway importance
-  2. Cross-model pathway ranking concordance — Spearman correlation heatmap
-     + pairwise rank scatter plots
-  3. Transformer attention head heatmaps — mean CLS->pathway attention per head/layer
-  4. Transformer head specialization — entropy bar chart per head
-  5. GNN GradCAM node attribution — lollipop chart + optional network graph
-  6. Multi-model pathway rank comparison — top-N pathway dot plot across models
+  01_auroc_comparison.pdf       — AUROC + 95% CI per model, grouped by feature set
+  02_auroc_heatmap.pdf          — AUROC heatmap: rows=feature sets, cols=models
+  03_multimodel_dotplot.pdf     — Top-N features by percentile rank across models (per feature set)
+  04_cross_tissue_heatmap.pdf   — Per-model heatmap: rows=pathways, cols=GREx tissues
+  05_delong_heatmap.pdf         — DeLong p-value heatmap within each feature set
 
 Usage:
   python scripts/plot_interpretability.py \
-    --results_dir results/ \
-    --output_dir figures/ \
-    [--top_n 30] \
-    [--pathway_names_file data/pathway_names.txt]
-
-  results_dir must contain results.json (from train_all_models.py).
-  Optionally load saved model weights to regenerate attention tensors on the fly.
+      --agg_dir  /path/to/aggregated/ \
+      --out_dir  /path/to/figures/ \
+      [--top_n 30] \
+      [--feature_sets gwas_covs grex_AC_covs ...]  # subset to plot; default: all
 """
 
 import argparse
-import json
 import os
 import numpy as np
 import pandas as pd
@@ -30,499 +28,363 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-from matplotlib.colors import Normalize
-from matplotlib.cm import ScalarMappable
-import matplotlib.gridspec as gridspec
-from scipy.stats import spearmanr
 
+# ── Shared style ──────────────────────────────────────────────────────────────
 
-# ── Shared style ─────────────────────────────────────────────────────────────
+MODEL_ORDER = [
+    "covariates_logistic", "l1_logistic", "elasticnet",
+    "random_forest", "global_attention", "transformer", "gnn",
+]
 
-PALETTE = {
-    "global_attention": "#2166ac",
-    "transformer":      "#4dac26",
-    "gnn":              "#d01c8b",
-    "random_forest":    "#f4a582",
-    "l1_logistic":      "#b2abd2",
-    "prs_logistic":     "#999999",
+MODEL_COLORS = {
+    "covariates_logistic": "#999999",
+    "l1_logistic":         "#b2abd2",
+    "elasticnet":          "#8073ac",
+    "random_forest":       "#f4a582",
+    "global_attention":    "#2166ac",
+    "transformer":         "#4dac26",
+    "gnn":                 "#d01c8b",
 }
+
+GREX_TISSUES = ["grex_AC_covs", "grex_AA_covs", "grex_HAA_covs", "grex_HLV_covs", "grex_WB_covs"]
+TISSUE_LABELS = {
+    "grex_AC_covs":  "Artery\nCoronary",
+    "grex_AA_covs":  "Artery\nAorta",
+    "grex_HAA_covs": "Heart\nAtrial App.",
+    "grex_HLV_covs": "Heart\nLeft Vent.",
+    "grex_WB_covs":  "Whole\nBlood",
+}
+
 
 def _style():
     plt.rcParams.update({
         "font.family": "sans-serif",
-        "font.size": 9,
-        "axes.spines.top": False,
+        "font.size":   9,
+        "axes.spines.top":   False,
         "axes.spines.right": False,
         "axes.linewidth": 0.8,
-        "xtick.major.size": 3,
-        "ytick.major.size": 3,
         "figure.dpi": 150,
     })
 
-def _save(fig, path, tight=True):
-    if tight:
-        fig.tight_layout()
+
+def _save(fig, path):
+    fig.tight_layout()
     fig.savefig(path, bbox_inches="tight", dpi=150)
     plt.close(fig)
     print(f"  Saved: {path}")
 
 
-# ── 1. Global attention weight lollipop ──────────────────────────────────────
+def _model_order(models):
+    """Sort models in canonical display order."""
+    known = [m for m in MODEL_ORDER if m in models]
+    extra = [m for m in sorted(models) if m not in MODEL_ORDER]
+    return known + extra
 
-def plot_global_attention(ranking: list, top_n: int, out_path: str):
-    """
-    ranking: list of [pathway_name, weight] from results.json
-    """
-    df = pd.DataFrame(ranking, columns=["pathway", "weight"])
-    df = df.sort_values("weight", ascending=False).head(top_n).reset_index(drop=True)
-    df = df.sort_values("weight")  # ascending for horizontal lollipop
 
-    fig, ax = plt.subplots(figsize=(6, max(4, top_n * 0.28)))
-    y = np.arange(len(df))
+# ── 1. AUROC comparison — grouped bar chart ───────────────────────────────────
 
-    ax.hlines(y, 0, df["weight"], color=PALETTE["global_attention"], linewidth=1.2, alpha=0.7)
-    ax.scatter(df["weight"], y, color=PALETTE["global_attention"], s=40, zorder=3)
+def plot_auroc_comparison(metrics_df, feature_sets, out_path):
+    models = _model_order(metrics_df["model"].unique())
+    n_fs   = len(feature_sets)
+    n_m    = len(models)
 
-    ax.set_yticks(y)
-    ax.set_yticklabels(df["pathway"], fontsize=8)
-    ax.set_xlabel("Softmax attention weight α")
-    ax.set_title(f"Global pathway attention weights\n(top {top_n})", fontsize=10, fontweight="bold")
-    ax.axvline(1 / len(ranking), color="gray", linestyle="--", linewidth=0.8, alpha=0.6,
-               label="Uniform (1/K)")
-    ax.legend(fontsize=8, frameon=False)
+    x       = np.arange(n_fs)
+    width   = 0.8 / n_m
+    offsets = np.linspace(-(0.8 - width) / 2, (0.8 - width) / 2, n_m)
 
+    fig, ax = plt.subplots(figsize=(max(8, n_fs * 1.4), 5))
+
+    for i, model in enumerate(models):
+        sub = metrics_df[metrics_df["model"] == model].set_index("feature_set")
+        aurocs     = [sub.loc[fs, "auroc"]         if fs in sub.index else np.nan for fs in feature_sets]
+        ci_lower   = [sub.loc[fs, "auroc_ci_lower"] if fs in sub.index else np.nan for fs in feature_sets]
+        ci_upper   = [sub.loc[fs, "auroc_ci_upper"] if fs in sub.index else np.nan for fs in feature_sets]
+        yerr_lo    = np.array([a - l if not np.isnan(a) else 0 for a, l in zip(aurocs, ci_lower)])
+        yerr_hi    = np.array([u - a if not np.isnan(a) else 0 for a, u in zip(aurocs, ci_upper)])
+
+        ax.bar(x + offsets[i], aurocs, width,
+               color=MODEL_COLORS.get(model, "#aaaaaa"), alpha=0.85,
+               label=model.replace("_", " "), zorder=2)
+        ax.errorbar(x + offsets[i], aurocs,
+                    yerr=[yerr_lo, yerr_hi],
+                    fmt="none", color="black", linewidth=0.8, capsize=2, zorder=3)
+
+    ax.axhline(0.5, color="gray", linestyle="--", linewidth=0.8, alpha=0.6)
+    ax.set_xticks(x)
+    ax.set_xticklabels([fs.replace("_covs", "").replace("_", "\n") for fs in feature_sets],
+                       fontsize=8)
+    ax.set_ylabel("AUROC")
+    ax.set_ylim(bottom=max(0, metrics_df["auroc"].min() - 0.05))
+    ax.set_title("AUROC by feature set and model (95% CI)", fontsize=11, fontweight="bold")
+    ax.legend(fontsize=7, frameon=False, bbox_to_anchor=(1.01, 1), loc="upper left",
+              title="Model", title_fontsize=8)
     _save(fig, out_path)
 
 
-# ── 2. Cross-model Spearman heatmap ──────────────────────────────────────────
+# ── 2. AUROC heatmap ──────────────────────────────────────────────────────────
 
-def plot_spearman_heatmap(spearman_data: dict, out_path: str):
-    """
-    spearman_data: {"model1_vs_model2": {"rho": ..., "p_value": ...}, ...}
-    """
-    # Collect model names
-    pairs = list(spearman_data.keys())
-    models = []
-    for pair in pairs:
-        for m in pair.split("_vs_"):
-            if m not in models:
-                models.append(m)
+def plot_auroc_heatmap(metrics_df, feature_sets, out_path):
+    models = _model_order(metrics_df["model"].unique())
+    pivot  = (metrics_df.pivot(index="feature_set", columns="model", values="auroc")
+                        .reindex(index=feature_sets, columns=models))
 
+    fig, ax = plt.subplots(figsize=(max(5, len(models) * 1.1), max(3, len(feature_sets) * 0.7)))
+    vmin = max(0.4, np.nanmin(pivot.values))
+    vmax = min(1.0, np.nanmax(pivot.values))
+    im = ax.imshow(pivot.values, aspect="auto", cmap="RdYlGn", vmin=vmin, vmax=vmax)
+
+    for i in range(len(feature_sets)):
+        for j in range(len(models)):
+            v = pivot.values[i, j]
+            if not np.isnan(v):
+                color = "white" if v < (vmin + vmax) / 2 else "black"
+                ax.text(j, i, f"{v:.3f}", ha="center", va="center", fontsize=7, color=color)
+
+    ax.set_xticks(range(len(models)))
+    ax.set_xticklabels([m.replace("_", "\n") for m in models], fontsize=8)
+    ax.set_yticks(range(len(feature_sets)))
+    ax.set_yticklabels([fs.replace("_covs", "") for fs in feature_sets], fontsize=8)
+    plt.colorbar(im, ax=ax, fraction=0.03, pad=0.02, label="AUROC")
+    ax.set_title("AUROC heatmap", fontsize=11, fontweight="bold")
+    _save(fig, out_path)
+
+
+# ── 3. Multi-model feature dot plot (per feature set) ─────────────────────────
+
+def plot_multimodel_dotplot(ranking_df, feature_set, models, top_n, out_path):
+    """
+    ranking_df: ranking_percentile.csv loaded as multi-index columns (feature_set, model)
+    Shows top_n features (by max percentile rank across models) for one feature set.
+    """
+    fs_cols = [(fs, m) for (fs, m) in ranking_df.columns if fs == feature_set and m in models]
+    if not fs_cols:
+        print(f"  Skipping dot plot for {feature_set}: no ranking data")
+        return
+
+    sub = ranking_df[fs_cols].copy()
+    sub.columns = [m for (_, m) in fs_cols]
+    sub = sub.dropna(how="all")
+
+    # Select top_n features by max percentile across models
+    sub["_max"] = sub.max(axis=1)
+    top_features = sub.nlargest(top_n, "_max").drop(columns="_max")
+    top_features = top_features.sort_values(top_features.columns[0])  # sort by first model
+
+    models_present = list(top_features.columns)
+    n_m = len(models_present)
+    n_f = len(top_features)
+    if n_f == 0:
+        return
+
+    fig, ax = plt.subplots(figsize=(max(5, n_m * 1.4), max(5, n_f * 0.32)))
+
+    for xi, model in enumerate(models_present):
+        for yi, (feature, row) in enumerate(top_features.iterrows()):
+            pct = row[model]
+            if np.isnan(pct):
+                continue
+            size  = max(10, 250 * (pct / 100) ** 2)
+            alpha = max(0.2, pct / 100)
+            ax.scatter(xi, yi, s=size, color=MODEL_COLORS.get(model, "#888888"),
+                       alpha=alpha, linewidths=0, zorder=2)
+            if pct >= 80:
+                ax.text(xi, yi, f"{pct:.0f}", ha="center", va="center",
+                        fontsize=5, color="white")
+
+    ax.set_xticks(range(n_m))
+    ax.set_xticklabels([m.replace("_", "\n") for m in models_present], fontsize=8)
+    ax.set_yticks(range(n_f))
+    ax.set_yticklabels([f.replace("_", " ") for f in top_features.index], fontsize=7)
+    ax.set_xlim(-0.6, n_m - 0.4)
+    ax.set_ylim(-0.6, n_f - 0.4)
+    ax.set_title(
+        f"{feature_set.replace('_covs', '')} — top {top_n} features\n"
+        f"(dot size/number = within-model percentile rank)",
+        fontsize=10, fontweight="bold",
+    )
+    _save(fig, out_path)
+
+
+# ── 4. Cross-tissue pathway heatmap (per model) ───────────────────────────────
+
+def plot_cross_tissue_heatmap(ranking_df, model, top_n, out_path):
+    """
+    For a single model, show how pathway percentile ranks vary across GREx tissues.
+    Rows = top pathways, columns = tissues.
+    """
+    tissue_cols = [(fs, m) for (fs, m) in ranking_df.columns
+                   if fs in GREX_TISSUES and m == model]
+    if len(tissue_cols) < 2:
+        print(f"  Skipping cross-tissue heatmap for {model}: fewer than 2 tissues available")
+        return
+
+    sub = ranking_df[tissue_cols].copy()
+    sub.columns = [TISSUE_LABELS.get(fs, fs) for (fs, _) in tissue_cols]
+    sub = sub.dropna(how="all")
+
+    # Top pathways by mean percentile across tissues
+    sub["_mean"] = sub.mean(axis=1)
+    top = sub.nlargest(top_n, "_mean").drop(columns="_mean")
+    top = top.sort_values(top.columns[0])
+
+    if len(top) == 0:
+        return
+
+    fig, ax = plt.subplots(figsize=(max(4, len(top.columns) * 1.2), max(5, len(top) * 0.32)))
+    im = ax.imshow(top.values, aspect="auto", cmap="YlOrRd", vmin=0, vmax=100)
+
+    for i in range(len(top)):
+        for j in range(len(top.columns)):
+            v = top.values[i, j]
+            if not np.isnan(v):
+                color = "white" if v > 70 else "black"
+                ax.text(j, i, f"{v:.0f}", ha="center", va="center", fontsize=6.5, color=color)
+
+    ax.set_xticks(range(len(top.columns)))
+    ax.set_xticklabels(top.columns, fontsize=8)
+    ax.set_yticks(range(len(top)))
+    ax.set_yticklabels([f.replace("_", " ") for f in top.index], fontsize=7)
+    plt.colorbar(im, ax=ax, fraction=0.03, pad=0.03, label="Percentile rank")
+    ax.set_title(
+        f"{model.replace('_', ' ')} — pathway ranks across GREx tissues\n(top {top_n} by mean rank)",
+        fontsize=10, fontweight="bold",
+    )
+    _save(fig, out_path)
+
+
+# ── 5. DeLong p-value heatmap ─────────────────────────────────────────────────
+
+def plot_delong_heatmap(delong_df, feature_set, out_path):
+    sub = delong_df[delong_df["feature_set"] == feature_set]
+    if sub.empty:
+        return
+
+    models = sorted(set(sub["model_1"].tolist() + sub["model_2"].tolist()))
     n = len(models)
     mat = np.full((n, n), np.nan)
-    for i in range(n):
-        mat[i, i] = 1.0
-    for pair, res in spearman_data.items():
-        m1, m2 = pair.split("_vs_")
-        if m1 in models and m2 in models:
-            i, j = models.index(m1), models.index(m2)
-            mat[i, j] = mat[j, i] = res["rho"]
+    np.fill_diagonal(mat, 1.0)
 
-    fig, ax = plt.subplots(figsize=(5, 4.5))
-    im = ax.imshow(mat, vmin=-1, vmax=1, cmap="RdBu_r")
+    for _, row in sub.iterrows():
+        i, j = models.index(row["model_1"]), models.index(row["model_2"])
+        mat[i, j] = mat[j, i] = row["p_value"]
+
+    fig, ax = plt.subplots(figsize=(max(4, n), max(4, n)))
+    # Show -log10(p); cap at 4 (p=0.0001)
+    with np.errstate(divide="ignore"):
+        log_mat = np.where(np.isnan(mat), np.nan, -np.log10(np.clip(mat, 1e-4, 1.0)))
+
+    im = ax.imshow(log_mat, aspect="auto", cmap="Blues", vmin=0, vmax=4)
 
     labels = [m.replace("_", "\n") for m in models]
-    ax.set_xticks(range(n))
-    ax.set_yticks(range(n))
-    ax.set_xticklabels(labels, fontsize=8)
-    ax.set_yticklabels(labels, fontsize=8)
+    ax.set_xticks(range(n)); ax.set_xticklabels(labels, fontsize=7)
+    ax.set_yticks(range(n)); ax.set_yticklabels(labels, fontsize=7)
 
     for i in range(n):
         for j in range(n):
             if not np.isnan(mat[i, j]):
-                color = "white" if abs(mat[i, j]) > 0.5 else "black"
-                ax.text(j, i, f"{mat[i, j]:.2f}", ha="center", va="center",
-                        fontsize=8, color=color)
+                txt = "1" if i == j else f"{mat[i,j]:.3f}"
+                color = "white" if (not np.isnan(log_mat[i, j]) and log_mat[i, j] > 2) else "black"
+                ax.text(j, i, txt, ha="center", va="center", fontsize=6.5, color=color)
 
-    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="Spearman ρ")
-    ax.set_title("Cross-model pathway ranking concordance", fontsize=10, fontweight="bold")
-    _save(fig, out_path)
-
-
-# ── 3. Pairwise rank scatter plots ───────────────────────────────────────────
-
-def plot_rank_scatter(rankings: dict, top_n: int, out_path: str):
-    """
-    rankings: {model_name: [[pathway, score], ...]}
-    Scatter plots of pathway ranks between each pair of models.
-    """
-    # Convert to rank dicts: pathway -> rank (1=top)
-    def to_ranks(items):
-        sorted_items = sorted(items, key=lambda x: -x[1])
-        return {name: r + 1 for r, (name, _) in enumerate(sorted_items)}
-
-    model_ranks = {m: to_ranks(items) for m, items in rankings.items()}
-    models = list(model_ranks.keys())
-
-    # Only plot models that have pathway rankings (baseline PRS logistic doesn't)
-    n = len(models)
-    if n < 2:
-        return
-
-    n_pairs = n * (n - 1) // 2
-    ncols = min(3, n_pairs)
-    nrows = (n_pairs + ncols - 1) // ncols
-
-    fig, axes = plt.subplots(nrows, ncols, figsize=(4.5 * ncols, 4 * nrows), squeeze=False)
-    axes_flat = axes.flatten()
-
-    pair_idx = 0
-    for i in range(n):
-        for j in range(i + 1, n):
-            ax = axes_flat[pair_idx]
-            m1, m2 = models[i], models[j]
-            r1, r2 = model_ranks[m1], model_ranks[m2]
-            common = sorted(set(r1) & set(r2))
-
-            ranks1 = [r1[p] for p in common]
-            ranks2 = [r2[p] for p in common]
-
-            # Color top_n in either model
-            top_set = {p for p in common if r1[p] <= top_n or r2[p] <= top_n}
-            colors = [PALETTE.get(m1, "#aaaaaa") if p in top_set else "#cccccc" for p in common]
-
-            ax.scatter(ranks1, ranks2, c=colors, s=18, alpha=0.7, linewidths=0)
-
-            # Label top pathways
-            for p in common:
-                if r1[p] <= 10 or r2[p] <= 10:
-                    ax.annotate(p, (r1[p], r2[p]), fontsize=5, alpha=0.8,
-                                xytext=(3, 3), textcoords="offset points")
-
-            rho, pval = spearmanr(ranks1, ranks2)
-            ax.set_xlabel(f"{m1.replace('_', ' ')} rank", fontsize=8)
-            ax.set_ylabel(f"{m2.replace('_', ' ')} rank", fontsize=8)
-            ax.set_title(f"ρ={rho:.2f}, p={pval:.3g}", fontsize=8)
-            ax.invert_xaxis()
-            ax.invert_yaxis()
-            pair_idx += 1
-
-    for ax in axes_flat[pair_idx:]:
-        ax.set_visible(False)
-
-    fig.suptitle("Pairwise pathway rank comparison", fontsize=11, fontweight="bold", y=1.01)
-    _save(fig, out_path)
-
-
-# ── 4. Transformer attention head heatmap ────────────────────────────────────
-
-def plot_transformer_head_heatmap(
-    mean_attn_npy_path: str,
-    pathway_names: list,
-    top_n: int,
-    out_path: str,
-):
-    """
-    mean_attn_npy_path: .npy file of shape (n_layers, n_heads, K+1, K+1)
-                        saved from PathwayTransformer.compute_mean_attention()
-    Shows CLS -> pathway attention (index 0 -> indices 1:) per head per layer.
-    """
-    if not os.path.exists(mean_attn_npy_path):
-        print(f"  Skipping transformer heatmap: {mean_attn_npy_path} not found")
-        return
-
-    attn = np.load(mean_attn_npy_path)  # (L, H, K+1, K+1)
-    n_layers, n_heads = attn.shape[:2]
-
-    fig, axes = plt.subplots(
-        n_layers, n_heads,
-        figsize=(4 * n_heads, 3.5 * n_layers),
-        squeeze=False,
-    )
-
-    for layer in range(n_layers):
-        for head in range(n_heads):
-            ax = axes[layer][head]
-            cls_attn = attn[layer, head, 0, 1:]  # (K,)
-
-            # Show top_n pathways by this head's CLS attention
-            top_idx = np.argsort(-cls_attn)[:top_n]
-            top_names = [pathway_names[i] for i in top_idx]
-            top_vals = cls_attn[top_idx]
-
-            im = ax.imshow(top_vals[np.newaxis, :], aspect="auto",
-                           cmap="Blues", vmin=0)
-            ax.set_xticks(range(top_n))
-            ax.set_xticklabels(top_names, rotation=90, fontsize=6)
-            ax.set_yticks([])
-            ax.set_title(f"Layer {layer+1}, Head {head+1}", fontsize=8)
-            plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-
-    fig.suptitle("Transformer: mean CLS→pathway attention weights", fontsize=11, fontweight="bold")
-    _save(fig, out_path)
-
-
-# ── 5. Transformer head specialization entropy ───────────────────────────────
-
-def plot_head_entropy(
-    mean_attn_npy_path: str,
-    out_path: str,
-):
-    """
-    Low entropy = head attends to a small set of pathways (specialized).
-    High entropy = head attends broadly (uniform).
-    """
-    if not os.path.exists(mean_attn_npy_path):
-        print(f"  Skipping head entropy: {mean_attn_npy_path} not found")
-        return
-
-    attn = np.load(mean_attn_npy_path)  # (L, H, K+1, K+1)
-    n_layers, n_heads = attn.shape[:2]
-
-    entropies = np.zeros((n_layers, n_heads))
-    for l in range(n_layers):
-        for h in range(n_heads):
-            p = attn[l, h, 0, 1:]
-            p = p / (p.sum() + 1e-9)
-            entropies[l, h] = -np.sum(p * np.log(p + 1e-9))
-
-    uniform_entropy = np.log(attn.shape[2] - 1)  # log(K)
-
-    fig, ax = plt.subplots(figsize=(max(4, n_heads * 1.2), 3.5))
-    x = np.arange(n_heads)
-    width = 0.35
-
-    colors = [PALETTE["global_attention"], PALETTE["transformer"]]
-    for l in range(n_layers):
-        offset = (l - (n_layers - 1) / 2) * width
-        bars = ax.bar(x + offset, entropies[l], width, label=f"Layer {l+1}",
-                      color=colors[l % len(colors)], alpha=0.8)
-
-    ax.axhline(uniform_entropy, color="gray", linestyle="--", linewidth=0.9,
-               label="Uniform entropy")
-    ax.set_xticks(x)
-    ax.set_xticklabels([f"Head {h+1}" for h in range(n_heads)])
-    ax.set_ylabel("Attention entropy (nats)")
-    ax.set_title("Transformer head specialization\n(lower = more focused)", fontsize=10, fontweight="bold")
-    ax.legend(fontsize=8, frameon=False)
-    _save(fig, out_path)
-
-
-# ── 6. GNN GradCAM lollipop ──────────────────────────────────────────────────
-
-def plot_gradcam(ranking: list, top_n: int, out_path: str):
-    df = pd.DataFrame(ranking, columns=["pathway", "gradcam"])
-    df = df.sort_values("gradcam", ascending=False).head(top_n).reset_index(drop=True)
-    df = df.sort_values("gradcam")
-
-    fig, ax = plt.subplots(figsize=(6, max(4, top_n * 0.28)))
-    y = np.arange(len(df))
-
-    norm = Normalize(vmin=df["gradcam"].min(), vmax=df["gradcam"].max())
-    cmap = plt.get_cmap("YlOrRd")
-    colors = [cmap(norm(v)) for v in df["gradcam"]]
-
-    ax.hlines(y, 0, df["gradcam"], color="#cccccc", linewidth=1.0)
-    for yi, (val, col) in enumerate(zip(df["gradcam"], colors)):
-        ax.scatter(val, yi, color=col, s=50, zorder=3)
-
-    sm = ScalarMappable(cmap=cmap, norm=norm)
-    sm.set_array([])
-    plt.colorbar(sm, ax=ax, fraction=0.03, pad=0.02, label="GradCAM score")
-
-    ax.set_yticks(y)
-    ax.set_yticklabels(df["pathway"], fontsize=8)
-    ax.set_xlabel("Mean GradCAM node attribution")
-    ax.set_title(f"GNN pathway importance (GradCAM)\n(top {top_n})", fontsize=10, fontweight="bold")
-    _save(fig, out_path)
-
-
-# ── 7. Multi-model top-N dot plot ────────────────────────────────────────────
-
-def plot_multimodel_dotplot(rankings: dict, top_n: int, out_path: str):
-    """
-    Show pathways that appear in the top_n of any model.
-    X-axis: model, Y-axis: pathway. Dot size/color = rank.
-    """
-    # Collect union of top-N pathways across all models
-    top_pathways = set()
-    model_rank_dicts = {}
-    for model, items in rankings.items():
-        sorted_items = sorted(items, key=lambda x: -x[1])
-        ranks = {name: r + 1 for r, (name, _) in enumerate(sorted_items)}
-        model_rank_dicts[model] = ranks
-        for name, _ in sorted_items[:top_n]:
-            top_pathways.add(name)
-
-    # Order pathways by mean rank across models (ascending = best)
-    pathway_list = sorted(
-        top_pathways,
-        key=lambda p: np.mean([model_rank_dicts[m].get(p, len(top_pathways) + 1)
-                               for m in model_rank_dicts]),
-    )
-    models = list(rankings.keys())
-
-    max_rank = max(
-        max(d.values()) for d in model_rank_dicts.values() if d
-    )
-
-    fig, ax = plt.subplots(
-        figsize=(max(5, len(models) * 1.4), max(5, len(pathway_list) * 0.35))
-    )
-
-    for xi, model in enumerate(models):
-        ranks = model_rank_dicts[model]
-        for yi, pathway in enumerate(pathway_list):
-            r = ranks.get(pathway, None)
-            if r is None:
-                continue
-            # Dot size: larger = higher rank (lower number)
-            size = max(10, 300 * (1 - (r - 1) / max_rank))
-            color = PALETTE.get(model, "#888888")
-            alpha = max(0.2, 1 - (r - 1) / max_rank)
-            ax.scatter(xi, yi, s=size, color=color, alpha=alpha, linewidths=0)
-            if r <= top_n:
-                ax.text(xi, yi, str(r), ha="center", va="center", fontsize=5.5,
-                        color="white" if alpha > 0.5 else "black")
-
-    ax.set_xticks(range(len(models)))
-    ax.set_xticklabels([m.replace("_", "\n") for m in models], fontsize=8)
-    ax.set_yticks(range(len(pathway_list)))
-    ax.set_yticklabels(pathway_list, fontsize=7.5)
-    ax.set_xlim(-0.6, len(models) - 0.4)
-    ax.set_ylim(-0.6, len(pathway_list) - 0.4)
+    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="-log10(p)")
     ax.set_title(
-        f"Top-{top_n} pathways across models\n(number = rank, dot size ∝ importance)",
-        fontsize=10, fontweight="bold",
-    )
-
-    handles = [mpatches.Patch(color=PALETTE.get(m, "#888888"), label=m.replace("_", " "))
-               for m in models]
-    ax.legend(handles=handles, fontsize=7, frameon=False,
-              bbox_to_anchor=(1.01, 1), loc="upper left")
-
-    _save(fig, out_path)
-
-
-# ── 8. L1 logistic regression coefficient plot ───────────────────────────────
-
-def plot_l1_coefficients(ranking: list, top_n: int, out_path: str):
-    """
-    Shows L1 logistic regression pathway coefficient magnitudes.
-    Distinguishes zero (pruned) vs non-zero (selected) coefficients.
-    """
-    df = pd.DataFrame(ranking, columns=["pathway", "coef_magnitude"])
-    df_nonzero = df[df["coef_magnitude"] > 0].sort_values("coef_magnitude", ascending=False)
-    n_zero = (df["coef_magnitude"] == 0).sum()
-
-    df_plot = df_nonzero.head(top_n).sort_values("coef_magnitude")
-
-    fig, ax = plt.subplots(figsize=(6, max(4, len(df_plot) * 0.28)))
-    y = np.arange(len(df_plot))
-
-    ax.hlines(y, 0, df_plot["coef_magnitude"], color=PALETTE["l1_logistic"], linewidth=1.2, alpha=0.7)
-    ax.scatter(df_plot["coef_magnitude"], y, color=PALETTE["l1_logistic"], s=40, zorder=3)
-    ax.set_yticks(y)
-    ax.set_yticklabels(df_plot["pathway"], fontsize=8)
-    ax.set_xlabel("Coefficient magnitude (L2 norm per pathway)")
-    ax.set_title(
-        f"L1 logistic: selected pathways (top {top_n})\n"
-        f"{len(df_nonzero)} non-zero / {len(df)} total ({n_zero} pruned to zero)",
+        f"DeLong pairwise p-values\n{feature_set.replace('_covs', '')}",
         fontsize=10, fontweight="bold",
     )
     _save(fig, out_path)
 
 
-# ── Main ─────────────────────────────────────────────────────────────────────
+# ── Main ──────────────────────────────────────────────────────────────────────
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--results_dir", default="results/")
-    p.add_argument("--output_dir", default="figures/")
-    p.add_argument("--top_n", type=int, default=30,
-                   help="Number of top pathways to show in lollipop/dot plots")
-    p.add_argument("--pathway_names_file", default=None,
-                   help="Optional plain text file with one pathway name per line "
-                        "(needed for transformer heatmap if not in results.json)")
-    p.add_argument("--mean_attn_npy", default=None,
-                   help="Path to .npy file of mean transformer attention weights "
-                        "(shape: n_layers, n_heads, K+1, K+1). "
-                        "Default: results_dir/mean_attention.npy")
+    p.add_argument("--agg_dir", required=True,
+                   help="Directory containing aggregate_results.py outputs.")
+    p.add_argument("--out_dir", default="figures/")
+    p.add_argument("--top_n", type=int, default=30)
+    p.add_argument("--feature_sets", nargs="*", default=None,
+                   help="Subset of feature sets to plot. Default: all in metrics_summary.csv.")
     return p.parse_args()
 
 
 def main():
     args = parse_args()
     _style()
-    os.makedirs(args.output_dir, exist_ok=True)
+    os.makedirs(args.out_dir, exist_ok=True)
 
-    results_path = os.path.join(args.results_dir, "results.json")
-    with open(results_path) as f:
-        results = json.load(f)
+    # ── Load data ─────────────────────────────────────────────────────────────
+    metrics_path = os.path.join(args.agg_dir, "metrics_summary.csv")
+    rank_path    = os.path.join(args.agg_dir, "ranking_percentile.csv")
+    delong_path  = os.path.join(args.agg_dir, "delong_summary.csv")
 
-    rankings = results.get("pathway_rankings", {})
-    spearman = results.get("spearman_concordance", {})
+    if not os.path.isfile(metrics_path):
+        raise FileNotFoundError(f"metrics_summary.csv not found in {args.agg_dir}")
 
-    # ── 1. Global attention lollipop
-    if "global_attention" in rankings:
-        print("Plotting global attention weights...")
-        plot_global_attention(
-            rankings["global_attention"], args.top_n,
-            os.path.join(args.output_dir, "01_global_attention_weights.pdf"),
-        )
+    metrics_df = pd.read_csv(metrics_path)
 
-    # ── 2. Spearman concordance heatmap
-    if spearman:
-        print("Plotting Spearman concordance heatmap...")
-        plot_spearman_heatmap(
-            spearman,
-            os.path.join(args.output_dir, "02_spearman_concordance_heatmap.pdf"),
-        )
+    ranking_df = None
+    if os.path.isfile(rank_path):
+        ranking_df = pd.read_csv(rank_path, index_col=0, header=[0, 1])
 
-    # ── 3. Pairwise rank scatter
-    if len(rankings) >= 2:
-        print("Plotting pairwise rank scatter...")
-        plot_rank_scatter(
-            rankings, args.top_n,
-            os.path.join(args.output_dir, "03_rank_scatter.pdf"),
-        )
+    delong_df = None
+    if os.path.isfile(delong_path):
+        delong_df = pd.read_csv(delong_path)
 
-    # ── 4 & 5. Transformer attention heatmap + head entropy
-    attn_npy = args.mean_attn_npy or os.path.join(args.results_dir, "mean_attention.npy")
-    pathway_names = None
-    if args.pathway_names_file and os.path.exists(args.pathway_names_file):
-        with open(args.pathway_names_file) as f:
-            pathway_names = [l.strip() for l in f if l.strip()]
-    elif "global_attention" in rankings:
-        pathway_names = [item[0] for item in rankings["global_attention"]]
+    # Determine feature sets and models to plot
+    feature_sets = args.feature_sets or sorted(metrics_df["feature_set"].unique())
+    models       = _model_order(metrics_df["model"].unique())
 
-    if pathway_names:
-        print("Plotting transformer attention heatmaps...")
-        plot_transformer_head_heatmap(
-            attn_npy, pathway_names, min(args.top_n, 20),
-            os.path.join(args.output_dir, "04_transformer_head_heatmap.pdf"),
-        )
-        print("Plotting head entropy...")
-        plot_head_entropy(
-            attn_npy,
-            os.path.join(args.output_dir, "05_transformer_head_entropy.pdf"),
-        )
+    print(f"Feature sets : {feature_sets}")
+    print(f"Models       : {models}")
 
-    # ── 6. GNN GradCAM lollipop
-    if "gnn" in rankings:
-        print("Plotting GNN GradCAM attribution...")
-        plot_gradcam(
-            rankings["gnn"], args.top_n,
-            os.path.join(args.output_dir, "06_gnn_gradcam.pdf"),
-        )
+    # ── 1. AUROC grouped bar ──────────────────────────────────────────────────
+    print("Plotting AUROC comparison...")
+    plot_auroc_comparison(
+        metrics_df, feature_sets,
+        os.path.join(args.out_dir, "01_auroc_comparison.pdf"),
+    )
 
-    # ── 7. Multi-model dot plot
-    if len(rankings) >= 2:
-        print("Plotting multi-model dot plot...")
-        plot_multimodel_dotplot(
-            rankings, args.top_n,
-            os.path.join(args.output_dir, "07_multimodel_dotplot.pdf"),
-        )
+    # ── 2. AUROC heatmap ──────────────────────────────────────────────────────
+    print("Plotting AUROC heatmap...")
+    plot_auroc_heatmap(
+        metrics_df, feature_sets,
+        os.path.join(args.out_dir, "02_auroc_heatmap.pdf"),
+    )
 
-    # ── 8. L1 coefficient plot
-    if "l1_logistic" in rankings:
-        print("Plotting L1 logistic coefficients...")
-        plot_l1_coefficients(
-            rankings["l1_logistic"], args.top_n,
-            os.path.join(args.output_dir, "08_l1_coefficients.pdf"),
-        )
+    # ── 3. Multi-model dot plot (one per feature set) ─────────────────────────
+    if ranking_df is not None:
+        for fs in feature_sets:
+            if fs == "covs_only":
+                continue  # no pathway rankings
+            tag = fs.replace("_covs", "").replace("_", "-")
+            print(f"Plotting dot plot: {fs}...")
+            plot_multimodel_dotplot(
+                ranking_df, fs, models, args.top_n,
+                os.path.join(args.out_dir, f"03_dotplot_{tag}.pdf"),
+            )
 
-    print(f"\nAll figures saved to {args.output_dir}/")
+    # ── 4. Cross-tissue heatmap (one per model) ───────────────────────────────
+    if ranking_df is not None:
+        for model in models:
+            if model == "covariates_logistic":
+                continue  # no pathway rankings
+            print(f"Plotting cross-tissue heatmap: {model}...")
+            plot_cross_tissue_heatmap(
+                ranking_df, model, args.top_n,
+                os.path.join(args.out_dir, f"04_cross_tissue_{model}.pdf"),
+            )
+
+    # ── 5. DeLong heatmap (one per feature set) ───────────────────────────────
+    if delong_df is not None:
+        for fs in feature_sets:
+            tag = fs.replace("_covs", "").replace("_", "-")
+            print(f"Plotting DeLong heatmap: {fs}...")
+            plot_delong_heatmap(
+                delong_df, fs,
+                os.path.join(args.out_dir, f"05_delong_{tag}.pdf"),
+            )
+
+    print(f"\nAll figures saved to {args.out_dir}/")
 
 
 if __name__ == "__main__":
