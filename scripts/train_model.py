@@ -124,6 +124,9 @@ def parse_args():
                    help="Covariate columns to pass through the flat covariate encoder. "
                         "Default: all columns in the covariates file except the label. "
                         "PRS is included here (not in the pathway matrix) when --prs_col is set.")
+    p.add_argument("--covariates_file", default=None,
+                   help="Override the covariates CSV path from data_config.json. "
+                        "Must have the same row order as the original covariates file.")
     p.add_argument("--graph_method", default="jaccard",
                    choices=["jaccard", "score_correlation", "string", "fully_connected"],
                    help="GNN only. How to construct pathway graph edges.")
@@ -175,7 +178,7 @@ def _resolve_pathway_cols(args, all_pw_names):
 
 # ── Data loading ──────────────────────────────────────────────────────────────
 
-def load_splits(splits_dir, pathway_cols=None, covariate_cols=None):
+def load_splits(splits_dir, pathway_cols=None, covariate_cols=None, covariates_file=None):
     config_path = os.path.join(splits_dir, "data_config.json")
     splits_path = os.path.join(splits_dir, "splits.npz")
     if not os.path.exists(config_path) or not os.path.exists(splits_path):
@@ -185,7 +188,7 @@ def load_splits(splits_dir, pathway_cols=None, covariate_cols=None):
         config = json.load(f)
 
     pw, cov, labels, pw_names, cov_cols_all, _ = load_data(
-        config["pathway_matrix"], config["covariates"],
+        config["pathway_matrix"], covariates_file or config["covariates"],
         config["label_col"], covariate_cols or config["covariate_cols"],
     )
 
@@ -583,6 +586,7 @@ def main():
         splits_dir,
         pathway_cols=_resolve_pathway_cols(args, _get_all_pw_names(splits_dir)),
         covariate_cols=args.covariate_cols,
+        covariates_file=args.covariates_file,
     )
     _done("loading data", args.model, t)
 
