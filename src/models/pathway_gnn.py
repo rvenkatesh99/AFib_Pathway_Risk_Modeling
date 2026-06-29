@@ -237,11 +237,10 @@ def build_string_edge_index(
         for g in genes:
             gene_to_pathways.setdefault(g, set()).add(idx)
 
-    # High-confidence PPI gene pairs
+    # PPI gene pairs (CSV is pre-filtered to desired confidence threshold)
     ppi_gene_pairs = set()
     for g1, g2, conf in ppi_edges:
-        if conf >= 400:
-            ppi_gene_pairs.add((min(g1, g2), max(g1, g2)))
+        ppi_gene_pairs.add((min(g1, g2), max(g1, g2)))
 
     # Count shared PPI-linked genes between pathway pairs
     shared_counts = {}
