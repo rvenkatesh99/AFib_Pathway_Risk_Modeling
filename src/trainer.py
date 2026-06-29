@@ -95,7 +95,7 @@ def _pos_weight(labels, device):
 def train(model, train_loader, val_loader, train_labels,
           n_epochs=200, lr=1e-3, weight_decay=1e-4, patience=15, device="cpu", verbose=True):
     model     = model.to(device)
-    criterion = nn.BCEWithLogitsLoss(pos_weight=_pos_weight(train_labels, device))
+    criterion = nn.BCEWithLogitsLoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_epochs, eta_min=lr/100)
     stopper   = EarlyStopping(patience=patience)
