@@ -336,6 +336,7 @@ def run_l1_logistic(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, i
 
 def run_random_forest(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, out_dir, **_):
     T = pw.shape[2] if pw.ndim == 3 else 1
+    pw, cov = _scale_splits(pw, cov, idx_tr, idx_va, idx_te)
     flat = {s: flatten_pathway_matrix(pw[i]) for s, i in [("tr", idx_tr), ("va", idx_va), ("te", idx_te)]}
     X = {s: np.concatenate([flat[s], cov[i]], axis=1)
          for s, i in [("tr", idx_tr), ("va", idx_va), ("te", idx_te)]}
@@ -371,10 +372,31 @@ def predict(model, loader):
     return np.concatenate(probs)
 
 
+def _scale_splits(pw, cov, idx_tr, idx_va, idx_te):
+    """Fit StandardScaler on train, apply to val/test for both pathway and covariate arrays."""
+    # Covariates: (N, C)
+    cov_scaler = StandardScaler().fit(cov[idx_tr])
+    cov_scaled = cov.copy().astype(np.float32)
+    for idx in (idx_tr, idx_va, idx_te):
+        cov_scaled[idx] = cov_scaler.transform(cov[idx])
+
+    # Pathway matrix: (N, K, T) or (N, K) — reshape to 2D, scale, reshape back
+    pw_scaled = pw.copy().astype(np.float32)
+    if pw.shape[1] > 0:
+        orig_shape = pw.shape[1:]
+        pw_2d = pw.reshape(len(pw), -1)
+        pw_scaler = StandardScaler().fit(pw_2d[idx_tr])
+        for idx in (idx_tr, idx_va, idx_te):
+            pw_scaled[idx] = pw_scaler.transform(pw_2d[idx]).reshape(-1, *orig_shape)
+
+    return pw_scaled, cov_scaled
+
+
 def run_neural(args, model_cls, model_kwargs, train_kwargs,
                pw, cov, labels, pw_names, idx_tr, idx_va, idx_te,
                out_dir, weight_file, post_fn=None):
     """Shared training loop for all three neural models."""
+    pw, cov = _scale_splits(pw, cov, idx_tr, idx_va, idx_te)
     train_loader, val_loader, test_loader = _make_loaders(pw, cov, labels, idx_tr, idx_va, idx_te)
 
     if args.tune:
