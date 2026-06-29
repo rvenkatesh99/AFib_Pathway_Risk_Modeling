@@ -32,12 +32,11 @@ import matplotlib.patches as mpatches
 # ── Shared style ──────────────────────────────────────────────────────────────
 
 MODEL_ORDER = [
-    "covariates_logistic", "l1_logistic", "elasticnet",
+    "l1_logistic", "elasticnet",
     "random_forest", "global_attention", "transformer", "gnn",
 ]
 
 MODEL_COLORS = {
-    "covariates_logistic": "#999999",
     "l1_logistic":         "#b2abd2",
     "elasticnet":          "#8073ac",
     "random_forest":       "#f4a582",
@@ -288,7 +287,7 @@ def plot_delta_auroc(metrics_df, feature_sets, out_path):
     ax.axhline(0, color="black", linewidth=0.9, linestyle="--", alpha=0.5)
     ax.set_xticks(x)
     ax.set_xticklabels([fs.replace("_covs", "").replace("_", "\n") for fs in fs_show], fontsize=8)
-    ax.set_ylabel("Δ AUROC vs covariates_logistic")
+    ax.set_ylabel("Δ AUROC vs covariates baseline")
     ax.set_title("Pathway contribution beyond covariate baseline", fontsize=11, fontweight="bold")
     ax.legend(fontsize=7, frameon=False, bbox_to_anchor=(1.01, 1), loc="upper left",
               title="Model", title_fontsize=8)
@@ -456,8 +455,6 @@ def main():
     # ── 4. Cross-tissue heatmap (one per model) ───────────────────────────────
     if ranking_df is not None:
         for model in models:
-            if model == "covariates_logistic":
-                continue  # no pathway rankings
             print(f"Plotting cross-tissue heatmap: {model}...")
             plot_cross_tissue_heatmap(
                 ranking_df, model, args.top_n,

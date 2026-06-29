@@ -57,9 +57,9 @@ from src.interpretability import (
 
 HPARAM_GRIDS = {
     "random_forest": {
-        "n_estimators": [200, 500],
-        "max_depth":    [4, 6, 8],
-        "min_samples_leaf": [20, 50, 100],
+        "n_estimators": [500],
+        "max_depth":    [8, 12, 15, None],
+        "min_samples_leaf": [20, 50],
     },
     "global_attention": {
         "embed_dim":    [64, 128],
@@ -86,7 +86,7 @@ HPARAM_GRIDS = {
 DEFAULTS = {
     "l1_logistic":         {},
     "elasticnet":          {},
-    "random_forest":       {"n_estimators": 500, "max_depth": 6, "min_samples_leaf": 50},
+    "random_forest":       {"n_estimators": 500, "max_depth": 12, "min_samples_leaf": 20},
     "global_attention":    {"embed_dim": 64, "dropout": 0.1, "lr": 1e-3, "weight_decay": 1e-4},
     "transformer":         {"embed_dim": 64, "n_heads": 4, "dropout": 0.1, "lr": 1e-3, "weight_decay": 1e-4},
     "gnn":                 {"embed_dim": 64, "dropout": 0.1, "lr": 1e-3, "weight_decay": 1e-4},
