@@ -62,23 +62,23 @@ HPARAM_GRIDS = {
         "min_samples_leaf": [20, 50],
     },
     "global_attention": {
-        "embed_dim":    [64, 128],
-        "dropout":      [0.1, 0.2],
-        "lr":           [1e-3, 5e-4],
-        "weight_decay": [1e-4],
+        "embed_dim":    [64, 128, 256],
+        "dropout":      [0.1, 0.2, 0.3],
+        "lr":           [1e-3, 5e-4, 1e-4],
+        "weight_decay": [1e-4, 1e-3],
     },
     "transformer": {
         "embed_dim":    [64, 128],
         "n_heads":      [2, 4],
         "dropout":      [0.1, 0.2],
-        "lr":           [1e-3, 5e-4],
-        "weight_decay": [1e-4],
+        "lr":           [1e-3, 5e-4, 1e-4],
+        "weight_decay": [1e-4, 1e-3],
     },
     "gnn": {
-        "embed_dim":    [64, 128],
+        "embed_dim":    [64, 128, 256],
         "dropout":      [0.1, 0.2],
-        "lr":           [1e-3, 5e-4],
-        "weight_decay": [1e-4],
+        "lr":           [1e-3, 5e-4, 1e-4],
+        "weight_decay": [1e-4, 1e-3],
     },
 }
 
@@ -429,7 +429,11 @@ def run_global_attention(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_
     fixed = dict(n_pathways=K, pathway_input_dim=T, covariate_dim=C)
 
     def post(model, test_loader, pw_names, out_dir):
-        return get_attention_pathway_ranking(model, pw_names), None
+        ranking = get_attention_pathway_ranking(model, pw_names)
+        weights = model.get_attention_weights()
+        if weights is not None:
+            np.save(os.path.join(out_dir, "attention_weights.npy"), weights.detach().cpu().numpy())
+        return ranking, None
 
     run_neural(args, GlobalPathwayAttentionModel, fixed, {},
                pw, cov, labels, pw_names, idx_tr, idx_va, idx_te,

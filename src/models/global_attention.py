@@ -31,8 +31,14 @@ class GlobalPathwayAttentionModel(nn.Module):
                 nn.LayerNorm(embed_dim),
                 nn.ReLU(),
                 nn.Dropout(dropout),
+                nn.Linear(embed_dim, embed_dim),
+                nn.ReLU(),
+                nn.Dropout(dropout),
             )
-            self.attention_logits = nn.Parameter(torch.zeros(n_pathways))
+            # Small random init breaks uniform softmax symmetry
+            self.attention_logits = nn.Parameter(torch.randn(n_pathways) * 0.01)
+            # LayerNorm on pathway context so it's comparable in scale to cov branch
+            self.pathway_context_norm = nn.LayerNorm(embed_dim)
 
         self.covariate_encoder = nn.Sequential(
             nn.Linear(covariate_dim, embed_dim),
@@ -59,7 +65,7 @@ class GlobalPathwayAttentionModel(nn.Module):
         if self.n_pathways > 0:
             h     = self.pathway_encoder(pathway_features)
             alpha = self.get_attention_weights().unsqueeze(0).unsqueeze(-1)
-            pathway_context = (alpha * h).sum(dim=1)
+            pathway_context = self.pathway_context_norm((alpha * h).sum(dim=1))
             combined = torch.cat([pathway_context, cov_embed], dim=-1)
         else:
             combined = cov_embed
