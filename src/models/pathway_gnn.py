@@ -355,24 +355,3 @@ def build_fully_connected_edge_index(n_pathways: int) -> torch.Tensor:
     return torch.stack([src[mask], dst[mask]], dim=0)
 
 
-def build_reactome_edge_index(
-    hierarchy_edges: list,
-    pathway_names: list,
-) -> torch.Tensor:
-    """
-    Build edge_index from Reactome parent-child hierarchy.
-    Note: only connects Reactome pathways — KEGG/GOBP nodes will be isolated.
-
-    hierarchy_edges: list of (parent_name, child_name) tuples
-    pathway_names: ordered list of pathway names
-    """
-    name_to_idx = {n: i for i, n in enumerate(pathway_names)}
-    src, dst = [], []
-    for parent, child in hierarchy_edges:
-        if parent in name_to_idx and child in name_to_idx:
-            p, c = name_to_idx[parent], name_to_idx[child]
-            src.extend([p, c])
-            dst.extend([c, p])
-    if not src:
-        return torch.zeros(2, 0, dtype=torch.long)
-    return torch.tensor([src, dst], dtype=torch.long)

@@ -7,8 +7,7 @@ Usage:
       --results_dir results/ \
       [--tune] \
       [--prs_col prs] \
-      [--string_edges data/string_edges.csv --pathway_gene_sets data/pathway_gene_sets.json] \
-      [--reactome_edges data/reactome_hierarchy.csv]
+      [--string_edges data/string_edges.csv --pathway_gene_sets data/pathway_gene_sets.json]
 
 Reads:  results_dir/splits.npz and results_dir/data_config.json (from prepare_splits.py)
 Writes: results_dir/<model>/
@@ -43,7 +42,6 @@ from src.models.pathway_transformer import PathwayTransformer
 from src.models.pathway_gnn import (
     PathwayGNN, build_string_edge_index, build_jaccard_edge_index,
     build_score_correlation_edge_index, build_fully_connected_edge_index,
-    build_reactome_edge_index,
 )
 from src.metrics import compute_metrics, bootstrap_metrics
 from src.interpretability import (
