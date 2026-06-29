@@ -35,7 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.trainer import load_data, make_loaders, train, tune_hyperparameters
 from src.models.baseline import (
-    build_l1_logistic, build_elasticnet, build_covariates_logistic,
+    build_l1_logistic, build_elasticnet,
     build_random_forest, flatten_pathway_matrix, save_model,
 )
 from src.models.global_attention import GlobalPathwayAttentionModel
@@ -56,10 +56,6 @@ from src.interpretability import (
 # automatically in tune_hyperparameters().
 
 HPARAM_GRIDS = {
-    # covariates_logistic, l1_logistic, elasticnet use internal CV — no outer grid.
-    "covariates_logistic": {
-        "C": [0.01, 0.1, 1.0, 10.0],
-    },
     "random_forest": {
         "n_estimators": [200, 500],
         "max_depth":    [4, 6, 8],
@@ -88,7 +84,6 @@ HPARAM_GRIDS = {
 
 # Default hyperparameters used when --tune is not set.
 DEFAULTS = {
-    "covariates_logistic": {"C": 1.0},
     "l1_logistic":         {},
     "elasticnet":          {},
     "random_forest":       {"n_estimators": 500, "max_depth": 6, "min_samples_leaf": 50},
@@ -274,26 +269,6 @@ def sklearn_grid_search(build_fn, grid, train_X, train_y, val_X, val_y):
 
 
 # ── Sklearn runners ───────────────────────────────────────────────────────────
-
-def run_covariates_logistic(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, out_dir, **_):
-    """L2 logistic regression on covariates only — clinical benchmark."""
-    slices = {"tr": cov[idx_tr], "va": cov[idx_va], "te": cov[idx_te]}
-
-    if args.tune:
-        best_hparams, search_results = sklearn_grid_search(
-            build_covariates_logistic, HPARAM_GRIDS["covariates_logistic"],
-            slices["tr"], labels[idx_tr], slices["va"], labels[idx_va],
-        )
-    else:
-        best_hparams, search_results = DEFAULTS["covariates_logistic"], None
-
-    final_X = np.concatenate([slices["tr"], slices["va"]])
-    final_y = np.concatenate([labels[idx_tr], labels[idx_va]])
-    model = build_covariates_logistic(**best_hparams)
-    model.fit(final_X, final_y)
-    save_model(model, os.path.join(out_dir, "covariates_logistic.pkl"))
-    probs = model.predict_proba(slices["te"])[:, 1]
-    save_outputs(out_dir, probs, labels[idx_te], {}, best_hparams, search_results, args.bootstrap_iters)
 
 
 def run_elasticnet(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, out_dir, **_):
@@ -544,8 +519,7 @@ def run_gnn(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, o
 # ── Dispatch ──────────────────────────────────────────────────────────────────
 
 RUNNERS = {
-    "covariates_logistic": run_covariates_logistic,
-    "l1_logistic":         run_l1_logistic,
+"l1_logistic":         run_l1_logistic,
     "elasticnet":          run_elasticnet,
     "random_forest":       run_random_forest,
     "global_attention":    run_global_attention,

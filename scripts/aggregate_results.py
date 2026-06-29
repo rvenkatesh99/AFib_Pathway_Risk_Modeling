@@ -34,7 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.metrics import pairwise_delong
 
 KNOWN_MODELS = [
-    "covariates_logistic", "l1_logistic", "elasticnet",
+    "l1_logistic", "elasticnet",
     "random_forest", "global_attention", "transformer", "gnn",
 ]
 
@@ -165,12 +165,11 @@ def main():
     # Baseline: covariates_logistic from covs_only (or best available fallback)
     baseline_auroc = None
     for cov_fs in ["covs_only"]:
-        key = (cov_fs, "covariates_logistic")
         row = next((r for r in metrics_rows
-                    if r["feature_set"] == cov_fs and r["model"] == "covariates_logistic"), None)
+                    if r["feature_set"] == cov_fs and r["model"] == "l1_logistic"), None)
         if row:
             baseline_auroc = row["auroc"]
-            print(f"\nBaseline (covariates_logistic / {cov_fs}): AUROC = {baseline_auroc:.4f}")
+            print(f"\nBaseline (l1_logistic / {cov_fs}): AUROC = {baseline_auroc:.4f}")
             break
 
     for row in metrics_rows:
@@ -237,7 +236,7 @@ def main():
         delta_pivot = metrics_df.pivot(
             index="feature_set", columns="model", values="delta_auroc_vs_baseline"
         )
-        print(f"\nDelta AUROC vs covariates_logistic baseline:")
+        print(f"\nDelta AUROC vs l1_logistic baseline:")
         print(delta_pivot.to_string(float_format=lambda x: f"{x:+.4f}"))
 
     # ── DeLong pairwise within each feature set ───────────────────────────────
