@@ -364,10 +364,16 @@ def _scale_splits(pw, cov, idx_tr, idx_va, idx_te):
 
 def run_neural(args, model_cls, model_kwargs, train_kwargs,
                pw, cov, labels, pw_names, idx_tr, idx_va, idx_te,
-               out_dir, weight_file, post_fn=None):
+               out_dir, weight_file, post_fn=None, batch_size=None):
     """Shared training loop for all three neural models."""
     pw, cov = _scale_splits(pw, cov, idx_tr, idx_va, idx_te)
-    train_loader, val_loader, test_loader = _make_loaders(pw, cov, labels, idx_tr, idx_va, idx_te)
+    bs = batch_size or TRAIN_CFG["batch_size"]
+    train_loader, val_loader, test_loader = make_loaders(
+        pw[idx_tr], cov[idx_tr], labels[idx_tr],
+        pw[idx_va], cov[idx_va], labels[idx_va],
+        pw[idx_te], cov[idx_te], labels[idx_te],
+        batch_size=bs,
+    )
 
     if args.tune:
         grid = HPARAM_GRIDS[args.model]
@@ -488,7 +494,7 @@ def run_gnn(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, o
         )
 
     elif method == "fully_connected":
-        edge_index = build_fully_connected_edge_index(K)
+        edge_index = None  # handled internally by fully_connected=True flag
 
     else:
         raise ValueError(f"Unknown graph method: {method}")
@@ -504,15 +510,18 @@ def run_gnn(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, o
         json.dump({"graph_method": method, "n_nodes": K, "n_edges": n_edges,
                    "pathway_names": pw_names}, f, indent=2)
 
-    fixed = dict(n_pathways=K, pathway_input_dim=T, covariate_dim=C, edge_index=edge_index)
+    fixed = dict(n_pathways=K, pathway_input_dim=T, covariate_dim=C,
+                 edge_index=edge_index, fully_connected=(method == "fully_connected"))
 
     def post(model, test_loader, pw_names, out_dir):
         ranking = compute_gradcam_pathway_ranking(model, test_loader, pw_names, device="cpu")
         return ranking, None
 
+    # batch_size=32: GNN materialises the full edge set per sample in the batch;
+    # at K=1654 the default batch of 256 exhausts RAM
     run_neural(args, PathwayGNN, fixed, {},
                pw, cov, labels, pw_names, idx_tr, idx_va, idx_te,
-               out_dir, "gnn.pt", post_fn=post)
+               out_dir, "gnn.pt", post_fn=post, batch_size=32)
 
 
 # ── Dispatch ──────────────────────────────────────────────────────────────────

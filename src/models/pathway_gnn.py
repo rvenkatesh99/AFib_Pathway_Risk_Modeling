@@ -70,6 +70,7 @@ class PathwayGNN(nn.Module):
         n_sage_layers: int = 2,
         dropout: float = 0.1,
         edge_index: torch.Tensor = None,
+        fully_connected: bool = False,
     ):
         if n_pathways == 0:
             raise ValueError("PathwayGNN requires at least one pathway (n_pathways > 0). "
@@ -78,12 +79,16 @@ class PathwayGNN(nn.Module):
         super().__init__()
         self.n_pathways = n_pathways
         self.embed_dim = embed_dim
+        # fully_connected: skip message passing, use global pooling only (ablation)
+        # Equivalent to fully_connected GNN with mean aggregation but avoids
+        # materialising K*(K-1) edges per sample
+        self.fully_connected = fully_connected
 
-        # Register graph structure as a buffer so it moves with the model
-        if edge_index is not None:
-            self.register_buffer("edge_index", edge_index)
-        else:
-            self.edge_index = None
+        if not fully_connected:
+            if edge_index is not None:
+                self.register_buffer("edge_index", edge_index)
+            else:
+                self.edge_index = None
 
         # Input projection
         self.input_proj = nn.Sequential(
@@ -138,33 +143,41 @@ class PathwayGNN(nn.Module):
         """
         pathway_features: (batch, K, T)
         covariates:       (batch, C)
-        edge_index:       (2, E) — uses stored edge_index if None
+        edge_index:       (2, E) — uses stored edge_index if None; ignored when fully_connected=True
         Returns logits (batch,)
         """
-        if edge_index is None:
-            edge_index = self.edge_index
-        if edge_index is None:
-            raise ValueError("edge_index must be provided either at init or at forward()")
+        batch_size, K, T = pathway_features.shape
+        device = pathway_features.device
 
-        x_flat, batch_edge_index, batch_vec = self._build_batch_graph(pathway_features, edge_index)
-
-        # Input projection
+        x_flat = pathway_features.reshape(batch_size * K, T)
         x = self.input_proj(x_flat)  # (batch*K, embed_dim)
 
-        # GraphSAGE message passing
-        for layer in self.sage_layers:
-            x = layer(x, batch_edge_index)
+        if self.fully_connected:
+            # Ablation: all pathways connected — equivalent to global pooling
+            # after one mean-aggregation SAGE step, without materialising K*(K-1) edges
+            x = x.reshape(batch_size, K, self.embed_dim)
+            x_mean = x.mean(dim=1)           # (batch, embed_dim)
+            x_max  = x.max(dim=1).values     # (batch, embed_dim)
+        else:
+            if edge_index is None:
+                edge_index = self.edge_index
+            if edge_index is None:
+                raise ValueError("edge_index must be provided either at init or at forward()")
 
-        # Global pooling: mean + max -> (batch, 2*embed_dim)
-        x_mean = global_mean_pool(x, batch_vec)
-        x_max = global_max_pool(x, batch_vec)
+            x_flat, batch_edge_index, batch_vec = self._build_batch_graph(pathway_features, edge_index)
+            x = self.input_proj(x_flat)
+
+            for layer in self.sage_layers:
+                x = layer(x, batch_edge_index)
+
+            batch_vec = torch.arange(batch_size, device=device).repeat_interleave(K)
+            x_mean = global_mean_pool(x, batch_vec)
+            x_max  = global_max_pool(x, batch_vec)
+
         graph_repr = torch.cat([x_mean, x_max], dim=-1)
-
-        # Covariate fusion
-        cov_embed = self.covariate_encoder(covariates)
-        combined = torch.cat([graph_repr, cov_embed], dim=-1)
-        logits = self.output_head(combined).squeeze(-1)
-        return logits
+        cov_embed  = self.covariate_encoder(covariates)
+        combined   = torch.cat([graph_repr, cov_embed], dim=-1)
+        return self.output_head(combined).squeeze(-1)
 
     def get_node_gradcam(
         self,
