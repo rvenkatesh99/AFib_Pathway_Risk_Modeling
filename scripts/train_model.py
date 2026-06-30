@@ -32,7 +32,8 @@ from sklearn.preprocessing import StandardScaler
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.trainer import load_data, make_loaders, train, tune_hyperparameters
+from src.trainer import (load_data, make_loaders, train, tune_hyperparameters,
+                         fit_platt_scaler, predict_calibrated)
 from src.models.baseline import (
     build_l1_logistic, build_elasticnet,
     build_random_forest, flatten_pathway_matrix, save_model,
@@ -69,8 +70,8 @@ HPARAM_GRIDS = {
         "embed_dim":    [64, 128],
         "n_heads":      [2, 4],
         "dropout":      [0.1, 0.2],
-        "lr":           [1e-3, 5e-4, 1e-4],
-        "weight_decay": [1e-4, 1e-3],
+        "lr":           [1e-3, 1e-4],
+        "weight_decay": [1e-4],
     },
     "gnn": {
         "embed_dim":    [64, 128, 256],
@@ -340,14 +341,6 @@ def run_random_forest(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va,
 # ── Neural runners ────────────────────────────────────────────────────────────
 
 @torch.no_grad()
-def predict(model, loader):
-    model.eval()
-    probs = []
-    for batch in loader:
-        logits = model(batch["pathway_features"], batch["covariates"])
-        probs.append(torch.sigmoid(logits).cpu().numpy())
-    return np.concatenate(probs)
-
 
 def _scale_splits(pw, cov, idx_tr, idx_va, idx_te):
     """Fit StandardScaler on train, apply to val/test for both pathway and covariate arrays."""
@@ -409,7 +402,11 @@ def run_neural(args, model_cls, model_kwargs, train_kwargs,
     )
     torch.save(model.state_dict(), os.path.join(out_dir, weight_file))
 
-    probs = predict(model, test_loader)
+    # Platt scaling: calibrate probabilities to true prevalence using val set
+    # (WeightedRandomSampler trains on balanced batches → raw sigmoid overestimates P(Y=1))
+    platt_scaler = fit_platt_scaler(model, val_loader, device="cpu")
+    probs, _ = predict_calibrated(model, test_loader, device="cpu", platt_scaler=platt_scaler)
+
     ranking, extra = post_fn(model, test_loader, pw_names, out_dir) if post_fn else ({}, None)
     save_outputs(out_dir, probs, labels[idx_te], ranking, best_hparams,
                  search_results_out, args.bootstrap_iters)

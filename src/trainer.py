@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 
@@ -86,16 +87,17 @@ class EarlyStopping:
         model.load_state_dict(self.best_state)
 
 
-def _pos_weight(labels, device):
-    n_neg = (labels == 0).sum()
-    n_pos = (labels == 1).sum()
-    return torch.tensor([n_neg / max(n_pos, 1)], dtype=torch.float32, device=device)
+def _focal_loss(logits, targets, gamma=2.0):
+    """Focal loss: down-weights easy negatives to improve AUPRC on imbalanced data."""
+    bce = nn.functional.binary_cross_entropy_with_logits(logits, targets, reduction="none")
+    pt  = torch.exp(-bce)
+    return ((1 - pt) ** gamma * bce).mean()
 
 
 def train(model, train_loader, val_loader, train_labels,
           n_epochs=200, lr=1e-3, weight_decay=1e-4, patience=15, device="cpu", verbose=True):
     model     = model.to(device)
-    criterion = nn.BCEWithLogitsLoss()
+    criterion = _focal_loss
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_epochs, eta_min=lr/100)
     stopper   = EarlyStopping(patience=patience)
@@ -153,6 +155,36 @@ def _evaluate(model, loader, criterion, device):
     labels = np.concatenate(labels)
     auroc  = roc_auc_score(labels, probs) if len(np.unique(labels)) > 1 else 0.5
     return total / len(loader.dataset), auroc
+
+
+@torch.no_grad()
+def _get_logits(model, loader, device):
+    """Collect raw logits and labels from a DataLoader."""
+    model.eval()
+    logits_all, labels_all = [], []
+    for batch in loader:
+        pw, cov, y = (batch[k].to(device) for k in ("pathway_features", "covariates", "label"))
+        logits_all.append(model(pw, cov).cpu().numpy())
+        labels_all.append(y.cpu().numpy())
+    return np.concatenate(logits_all), np.concatenate(labels_all)
+
+
+def fit_platt_scaler(model, val_loader, device):
+    """Fit a logistic regression on val logits to calibrate to true prevalence."""
+    logits, labels = _get_logits(model, val_loader, device)
+    scaler = LogisticRegression(C=1.0, solver="lbfgs", max_iter=1000)
+    scaler.fit(logits.reshape(-1, 1), labels)
+    return scaler
+
+
+def predict_calibrated(model, loader, device, platt_scaler=None):
+    """Return calibrated probabilities. Falls back to raw sigmoid if no scaler."""
+    logits, labels = _get_logits(model, loader, device)
+    if platt_scaler is not None:
+        probs = platt_scaler.predict_proba(logits.reshape(-1, 1))[:, 1]
+    else:
+        probs = 1 / (1 + np.exp(-logits))
+    return probs, labels
 
 
 # ── Hyperparameter tuning ─────────────────────────────────────────────────────

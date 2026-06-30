@@ -31,7 +31,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.metrics import pairwise_delong
+from src.metrics import pairwise_delong, compute_nri, compute_idi, compute_calibration
 
 KNOWN_MODELS = [
     "l1_logistic", "elasticnet",
@@ -140,6 +140,7 @@ def main():
         ci = met.get("bootstrap_95ci", {})
         auroc_ci = ci.get("auroc", {})
         auprc_ci = ci.get("auprc", {})
+        f1_ci    = ci.get("f1_at_opt_threshold", {})
 
         metrics_rows.append({
             "feature_set": fs,
@@ -151,7 +152,9 @@ def main():
             "auprc_ci_lower": auprc_ci.get("ci_lower"),
             "auprc_ci_upper": auprc_ci.get("ci_upper"),
             "brier_score": m.get("brier_score"),
-            "f1": m.get("f1"),
+            "f1": m.get("f1_at_opt_threshold"),
+            "f1_ci_lower": f1_ci.get("ci_lower"),
+            "f1_ci_upper": f1_ci.get("ci_upper"),
         })
 
         if probs is not None:
@@ -260,6 +263,52 @@ def main():
         delong_path = os.path.join(out_dir, "delong_summary.csv")
         delong_df.to_csv(delong_path, index=False, float_format="%.4f")
         print(f"Wrote {delong_path}")
+
+    # ── NRI / IDI / Calibration vs covs_only baseline ────────────────────────
+    ref_probs = all_probs.get(("covs_only", "l1_logistic"))
+    ref_labels = all_labels.get("covs_only")
+
+    reclassification_rows = []
+    calibration_rows = []
+
+    for (fs, model), probs in all_probs.items():
+        labels_fs = all_labels.get(fs)
+        if labels_fs is None:
+            continue
+
+        # Calibration for every model
+        cal = compute_calibration(labels_fs, probs)
+        calibration_rows.append({
+            "feature_set": fs, "model": model,
+            **cal,
+        })
+
+        # NRI / IDI only vs the covs_only reference, on shared test labels
+        if ref_probs is not None and ref_labels is not None and np.array_equal(labels_fs, ref_labels):
+            nri = compute_nri(labels_fs, probs, ref_probs)
+            idi = compute_idi(labels_fs, probs, ref_probs)
+            reclassification_rows.append({
+                "feature_set": fs, "model": model,
+                **nri, **idi,
+            })
+
+    if calibration_rows:
+        cal_df = pd.DataFrame(calibration_rows).sort_values(["feature_set", "model"])
+        cal_path = os.path.join(out_dir, "calibration_summary.csv")
+        cal_df.to_csv(cal_path, index=False, float_format="%.4f")
+        print(f"\nCalibration summary (slope≈1, intercept≈0 = well calibrated):")
+        print(cal_df.to_string(index=False))
+        print(f"Wrote {cal_path}")
+
+    if reclassification_rows:
+        reclassify_df = pd.DataFrame(reclassification_rows).sort_values(
+            ["feature_set", "model"]
+        )
+        reclassify_path = os.path.join(out_dir, "nri_idi_summary.csv")
+        reclassify_df.to_csv(reclassify_path, index=False, float_format="%.4f")
+        print(f"\nNRI / IDI vs covs_only l1_logistic baseline:")
+        print(reclassify_df[["feature_set", "model", "nri", "nri_p", "idi", "idi_p"]].to_string(index=False))
+        print(f"Wrote {reclassify_path}")
 
     # ── Ranking percentile table ──────────────────────────────────────────────
     if rankings:

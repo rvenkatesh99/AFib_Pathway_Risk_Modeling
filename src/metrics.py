@@ -1,6 +1,8 @@
 """
 Evaluation metrics:
   - AUROC, AUPRC, F1 at optimal threshold, Brier score
+  - NRI (continuous), IDI vs a reference model
+  - Calibration: Hosmer-Lemeshow, calibration slope/intercept
   - Bootstrap CIs (1000 iterations)
   - DeLong's test for correlated AUCs
   - Subgroup (ancestry) reporting
@@ -11,6 +13,7 @@ from sklearn.metrics import (
     roc_auc_score, average_precision_score, f1_score, brier_score_loss,
     precision_recall_curve, roc_curve,
 )
+from sklearn.linear_model import LogisticRegression
 from scipy import stats
 
 
@@ -172,6 +175,130 @@ def evaluate_subgroups(
             continue
         results[anc] = compute_metrics(y_true[mask], y_prob[mask])
     return results
+
+
+# ── NRI and IDI ───────────────────────────────────────────────────────────────
+
+def compute_nri(y_true: np.ndarray, prob_new: np.ndarray, prob_ref: np.ndarray) -> dict:
+    """
+    Continuous (category-free) NRI.
+
+    NRI = P(up | event) - P(down | event) + P(down | non-event) - P(up | non-event)
+
+    Pencina et al. (2008) Statistics in Medicine.
+    Returns NRI estimate and two-sided p-value via normal approximation.
+    """
+    events    = y_true == 1
+    nonevents = y_true == 0
+
+    up_ev   = np.mean(prob_new[events]    > prob_ref[events])
+    down_ev = np.mean(prob_new[events]    < prob_ref[events])
+    up_ne   = np.mean(prob_new[nonevents] > prob_ref[nonevents])
+    down_ne = np.mean(prob_new[nonevents] < prob_ref[nonevents])
+
+    nri_events    = up_ev   - down_ev
+    nri_nonevents = down_ne - up_ne
+    nri           = nri_events + nri_nonevents
+
+    # Variance via Pencina (2008) eq. 7
+    n_ev = events.sum()
+    n_ne = nonevents.sum()
+    var  = (up_ev + down_ev) / n_ev + (up_ne + down_ne) / n_ne
+    se   = np.sqrt(max(var, 1e-12))
+    z    = nri / se
+    p    = 2 * (1 - stats.norm.cdf(abs(z)))
+
+    return {
+        "nri":           float(nri),
+        "nri_events":    float(nri_events),
+        "nri_nonevents": float(nri_nonevents),
+        "nri_se":        float(se),
+        "nri_p":         float(p),
+    }
+
+
+def compute_idi(y_true: np.ndarray, prob_new: np.ndarray, prob_ref: np.ndarray) -> dict:
+    """
+    Integrated Discrimination Improvement (IDI).
+
+    IDI = (mean_new(events) - mean_new(non-events))
+        - (mean_ref(events) - mean_ref(non-events))
+
+    Pencina et al. (2008) Statistics in Medicine.
+    """
+    events    = y_true == 1
+    nonevents = y_true == 0
+
+    slope_new = prob_new[events].mean() - prob_new[nonevents].mean()
+    slope_ref = prob_ref[events].mean() - prob_ref[nonevents].mean()
+    idi       = slope_new - slope_ref
+
+    # Variance via delta method
+    n_ev  = events.sum()
+    n_ne  = nonevents.sum()
+    diff  = (prob_new - prob_ref)
+    var   = (diff[events].var(ddof=1) / n_ev
+             + diff[nonevents].var(ddof=1) / n_ne)
+    se    = np.sqrt(max(var, 1e-12))
+    z     = idi / se
+    p     = 2 * (1 - stats.norm.cdf(abs(z)))
+
+    return {
+        "idi":           float(idi),
+        "disc_slope_new": float(slope_new),
+        "disc_slope_ref": float(slope_ref),
+        "idi_se":        float(se),
+        "idi_p":         float(p),
+    }
+
+
+# ── Calibration ───────────────────────────────────────────────────────────────
+
+def hosmer_lemeshow(y_true: np.ndarray, y_prob: np.ndarray, n_groups: int = 10) -> dict:
+    """
+    Hosmer-Lemeshow goodness-of-fit test (decile-of-risk grouping).
+    H0: model is well-calibrated. Large p-value = good calibration.
+    """
+    order  = np.argsort(y_prob)
+    y_sort = y_true[order]
+    p_sort = y_prob[order]
+    groups = np.array_split(np.arange(len(y_true)), n_groups)
+
+    hl_stat = 0.0
+    for g in groups:
+        obs = y_sort[g].sum()
+        exp = p_sort[g].sum()
+        n_g = len(g)
+        exp_neg = n_g - exp
+        if exp > 0:
+            hl_stat += (obs - exp) ** 2 / exp
+        if exp_neg > 0:
+            hl_stat += (n_g - obs - exp_neg) ** 2 / exp_neg
+
+    df = n_groups - 2
+    p  = 1 - stats.chi2.cdf(hl_stat, df)
+    return {"hl_stat": float(hl_stat), "hl_df": df, "hl_p": float(p)}
+
+
+def calibration_slope(y_true: np.ndarray, y_prob: np.ndarray) -> dict:
+    """
+    Calibration slope and intercept via logistic regression of outcome on logit(predicted).
+    Perfect calibration: intercept=0, slope=1.
+    """
+    eps    = 1e-7
+    logits = np.log(np.clip(y_prob, eps, 1 - eps))
+    lr     = LogisticRegression(fit_intercept=True, C=1e6, solver="lbfgs", max_iter=1000)
+    lr.fit(logits.reshape(-1, 1), y_true)
+    return {
+        "cal_slope":     float(lr.coef_[0][0]),
+        "cal_intercept": float(lr.intercept_[0]),
+    }
+
+
+def compute_calibration(y_true: np.ndarray, y_prob: np.ndarray, n_groups: int = 10) -> dict:
+    """Combined calibration metrics: HL test + slope/intercept."""
+    return {**hosmer_lemeshow(y_true, y_prob, n_groups),
+            **calibration_slope(y_true, y_prob)}
 
 
 def pairwise_delong(model_probs: dict, y_true: np.ndarray) -> dict:
