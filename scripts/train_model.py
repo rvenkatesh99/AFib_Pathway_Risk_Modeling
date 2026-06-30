@@ -499,13 +499,18 @@ def run_gnn(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, o
     else:
         raise ValueError(f"Unknown graph method: {method}")
 
-    n_edges = edge_index.shape[1] // 2
-    print(f"  Graph: {K} nodes, {n_edges} undirected edges "
-          f"({n_edges / max(K*(K-1)//2, 1)*100:.1f}% of possible)")
+    if method == "fully_connected":
+        n_edges = K * (K - 1) // 2
+        print(f"  Graph: {K} nodes, fully connected ({n_edges} theoretical edges, no materialisation)")
+    else:
+        n_edges = edge_index.shape[1] // 2
+        print(f"  Graph: {K} nodes, {n_edges} undirected edges "
+              f"({n_edges / max(K*(K-1)//2, 1)*100:.1f}% of possible)")
 
     # Save graph structure and pathway names for downstream plotting
     os.makedirs(out_dir, exist_ok=True)
-    np.save(os.path.join(out_dir, "edge_index.npy"), edge_index.numpy())
+    if edge_index is not None:
+        np.save(os.path.join(out_dir, "edge_index.npy"), edge_index.numpy())
     with open(os.path.join(out_dir, "graph_info.json"), "w") as f:
         json.dump({"graph_method": method, "n_nodes": K, "n_edges": n_edges,
                    "pathway_names": pw_names}, f, indent=2)
