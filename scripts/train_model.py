@@ -3,7 +3,7 @@ Train a single model. Run one process per model, then aggregate_results.py.
 
 Usage:
   python scripts/train_model.py \
-      --model {covariates_logistic,l1_logistic,elasticnet,random_forest,global_attention,transformer,gnn} \
+      --model {covariates_logistic,l1_logistic,elasticnet,unregularized_logistic,random_forest,global_attention,transformer,gnn} \
       --results_dir results/ \
       [--tune] \
       [--prs_col prs] \
@@ -35,7 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.trainer import (load_data, make_loaders, train, tune_hyperparameters,
                          fit_platt_scaler, predict_calibrated)
 from src.models.baseline import (
-    build_l1_logistic, build_elasticnet,
+    build_l1_logistic, build_elasticnet, build_unregularized_logistic,
     build_random_forest, flatten_pathway_matrix, save_model,
 )
 from src.models.global_attention import GlobalPathwayAttentionModel
@@ -85,10 +85,11 @@ HPARAM_GRIDS = {
 DEFAULTS = {
     "l1_logistic":         {},
     "elasticnet":          {},
+    "unregularized_logistic": {},
     "random_forest":       {"n_estimators": 500, "max_depth": 12, "min_samples_leaf": 20},
     "global_attention":    {"embed_dim": 64, "dropout": 0.1, "lr": 1e-3, "weight_decay": 1e-4},
     "transformer":         {"embed_dim": 64, "n_heads": 4, "dropout": 0.1, "lr": 1e-3, "weight_decay": 1e-4},
-    "gnn":                 {"embed_dim": 64, "dropout": 0.1, "lr": 1e-3, "weight_decay": 1e-4},
+    "gnn":                 {"embed_dim": 64, "dropout": 0.1, "lr": 1e-3, "weight_decay": 1e-3},
 }
 
 # Final training settings (not tuned).
@@ -270,46 +271,50 @@ def sklearn_grid_search(build_fn, grid, train_X, train_y, val_X, val_y):
 # ── Sklearn runners ───────────────────────────────────────────────────────────
 
 
-def run_elasticnet(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, out_dir, **_):
-    """Elasticnet logistic regression on flattened pathway matrix + covariates."""
+def _run_sklearn_logistic(args, build_fn, model_name,
+                          pw, cov, labels, pw_names, cov_cols,
+                          idx_tr, idx_va, idx_te, out_dir, hparams_fn=None):
+    """Shared scaffold for all sklearn logistic runners."""
     T = pw.shape[2] if pw.ndim == 3 else 1
-    flat = {s: flatten_pathway_matrix(pw[i]) for s, i in [("tr", idx_tr), ("va", idx_va), ("te", idx_te)]}
-    X = {s: np.concatenate([flat[s], cov[i]], axis=1)
-         for s, i in [("tr", idx_tr), ("va", idx_va), ("te", idx_te)]}
-
+    splits = [("tr", idx_tr), ("va", idx_va), ("te", idx_te)]
+    X = {s: np.concatenate([flatten_pathway_matrix(pw[i]), cov[i]], axis=1) for s, i in splits}
     final_X = np.concatenate([X["tr"], X["va"]])
     final_y = np.concatenate([labels[idx_tr], labels[idx_va]])
-    model = build_elasticnet()
+    model = build_fn()
     model.fit(final_X, final_y)
-    best_C = float(np.atleast_1d(model.named_steps["clf"].C_)[0])
-    best_l1_ratio = float(np.atleast_1d(model.named_steps["clf"].l1_ratio_)[0])
-    print(f"  Best C (internal CV): {best_C:.5g}, l1_ratio: {best_l1_ratio:.3g}")
-    save_model(model, os.path.join(out_dir, "elasticnet.pkl"))
+    save_model(model, os.path.join(out_dir, f"{model_name}.pkl"))
     probs = model.predict_proba(X["te"])[:, 1]
-    ranking, cov_ranking = get_l1_pathway_ranking(model, pw_names, T, cov_cols) if pw_names else ({}, {})
-    save_outputs(out_dir, probs, labels[idx_te], ranking,
-                 {"C": best_C, "l1_ratio": best_l1_ratio}, None, args.bootstrap_iters,
+    ranking, cov_ranking = get_l1_pathway_ranking(model, pw_names, T, cov_cols)
+    hparams = hparams_fn(model) if hparams_fn else {}
+    save_outputs(out_dir, probs, labels[idx_te], ranking, hparams, None, args.bootstrap_iters,
                  covariate_ranking=cov_ranking)
+
+
+def run_elasticnet(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, out_dir, **_):
+    def _hparams(m):
+        best_C = float(np.atleast_1d(m.named_steps["clf"].C_)[0])
+        best_l1_ratio = float(np.atleast_1d(m.named_steps["clf"].l1_ratio_)[0])
+        print(f"  Best C (internal CV): {best_C:.5g}, l1_ratio: {best_l1_ratio:.3g}")
+        return {"C": best_C, "l1_ratio": best_l1_ratio}
+    _run_sklearn_logistic(args, build_elasticnet, "elasticnet",
+                          pw, cov, labels, pw_names, cov_cols,
+                          idx_tr, idx_va, idx_te, out_dir, hparams_fn=_hparams)
 
 
 def run_l1_logistic(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, out_dir, **_):
-    T = pw.shape[2] if pw.ndim == 3 else 1
-    flat = {s: flatten_pathway_matrix(pw[i]) for s, i in [("tr", idx_tr), ("va", idx_va), ("te", idx_te)]}
-    X = {s: np.concatenate([flat[s], cov[i]], axis=1)
-         for s, i in [("tr", idx_tr), ("va", idx_va), ("te", idx_te)]}
+    def _hparams(m):
+        best_C = float(np.atleast_1d(m.named_steps["clf"].C_)[0])
+        print(f"  Best C (internal CV): {best_C:.5g}")
+        return {"C": best_C}
+    _run_sklearn_logistic(args, build_l1_logistic, "l1_logistic",
+                          pw, cov, labels, pw_names, cov_cols,
+                          idx_tr, idx_va, idx_te, out_dir, hparams_fn=_hparams)
 
-    # Refit on train+val; internal 5-fold CV selects C within that set.
-    final_X = np.concatenate([X["tr"], X["va"]])
-    final_y = np.concatenate([labels[idx_tr], labels[idx_va]])
-    model = build_l1_logistic()
-    model.fit(final_X, final_y)
-    best_C = float(np.atleast_1d(model.named_steps["clf"].C_)[0])
-    print(f"  Best C (internal CV): {best_C:.5g}")
-    save_model(model, os.path.join(out_dir, "l1_logistic.pkl"))
-    probs = model.predict_proba(X["te"])[:, 1]
-    ranking, cov_ranking = get_l1_pathway_ranking(model, pw_names, T, cov_cols)
-    save_outputs(out_dir, probs, labels[idx_te], ranking, {"C": best_C}, None, args.bootstrap_iters,
-                 covariate_ranking=cov_ranking)
+
+def run_unregularized_logistic(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, out_dir, **_):
+    _run_sklearn_logistic(args, build_unregularized_logistic, "unregularized_logistic",
+                          pw, cov, labels, pw_names, cov_cols,
+                          idx_tr, idx_va, idx_te, out_dir)
 
 
 def run_random_forest(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, out_dir, **_):
@@ -532,8 +537,9 @@ def run_gnn(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, o
 # ── Dispatch ──────────────────────────────────────────────────────────────────
 
 RUNNERS = {
-"l1_logistic":         run_l1_logistic,
+    "l1_logistic":         run_l1_logistic,
     "elasticnet":          run_elasticnet,
+    "unregularized_logistic": run_unregularized_logistic,
     "random_forest":       run_random_forest,
     "global_attention":    run_global_attention,
     "transformer":         run_transformer,

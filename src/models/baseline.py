@@ -61,6 +61,17 @@ def build_covariates_logistic(C: float = 1.0):
     ])
 
 
+def build_unregularized_logistic():
+    """Unregularized logistic regression — standard for PRS + small covariate sets."""
+    return Pipeline([
+        ("scaler", StandardScaler()),
+        ("clf", LogisticRegression(
+            penalty=None, solver="lbfgs",
+            max_iter=1000, class_weight="balanced",
+        )),
+    ])
+
+
 def build_random_forest(
     n_estimators: int = 500,
     max_depth: int = 6,

@@ -128,23 +128,81 @@ def plot_auroc_heatmap(metrics_df, feature_sets, out_path):
                         .reindex(index=feature_sets, columns=models))
 
     fig, ax = plt.subplots(figsize=(max(5, len(models) * 1.1), max(3, len(feature_sets) * 0.7)))
-    vmin = max(0.4, np.nanmin(pivot.values))
-    vmax = min(1.0, np.nanmax(pivot.values))
+    # Fixed color scale anchored at random (0.5) so comparisons are honest
+    vmin, vmax = 0.5, 1.0
     im = ax.imshow(pivot.values, aspect="auto", cmap="RdYlGn", vmin=vmin, vmax=vmax)
 
     for i in range(len(feature_sets)):
         for j in range(len(models)):
             v = pivot.values[i, j]
             if not np.isnan(v):
-                color = "white" if v < (vmin + vmax) / 2 else "black"
-                ax.text(j, i, f"{v:.3f}", ha="center", va="center", fontsize=7, color=color)
+                # White text on dark cells, black on light
+                bg = (v - vmin) / (vmax - vmin)
+                color = "white" if bg < 0.45 else "black"
+                ax.text(j, i, f"{v:.3f}", ha="center", va="center", fontsize=7, color=color,
+                        fontweight="bold")
 
     ax.set_xticks(range(len(models)))
     ax.set_xticklabels([m.replace("_", "\n") for m in models], fontsize=8)
     ax.set_yticks(range(len(feature_sets)))
-    ax.set_yticklabels([fs.replace("_covs", "") for fs in feature_sets], fontsize=8)
-    plt.colorbar(im, ax=ax, fraction=0.03, pad=0.02, label="AUROC")
-    ax.set_title("AUROC heatmap", fontsize=11, fontweight="bold")
+    ax.set_yticklabels([fs.replace("_covs", "").replace("_", " ") for fs in feature_sets], fontsize=8)
+    cbar = plt.colorbar(im, ax=ax, fraction=0.03, pad=0.02)
+    cbar.set_label("AUROC", fontsize=9)
+    cbar.set_ticks([0.5, 0.6, 0.7, 0.8, 0.9, 1.0])
+    ax.set_title("AUROC by feature set and model", fontsize=11, fontweight="bold")
+    ax.set_xlabel("Model", fontsize=9)
+    ax.set_ylabel("Feature set", fontsize=9)
+    _save(fig, out_path)
+
+
+def plot_auroc_dotplot(metrics_df, feature_sets, out_path):
+    """
+    Forest-plot style dot plot: one row per feature set, one dot per model,
+    x-axis fixed at 0.5–1.0 with 95% CI whiskers. Honest scale, CI visible.
+    """
+    models = _model_order(metrics_df["model"].unique())
+    n_fs = len(feature_sets)
+    n_m  = len(models)
+
+    fig, ax = plt.subplots(figsize=(6, max(4, n_fs * n_m * 0.25 + 1)))
+
+    y_ticks, y_labels = [], []
+    row = 0
+    for fs in feature_sets:
+        sub = metrics_df[metrics_df["feature_set"] == fs].set_index("model")
+        group_rows = []
+        for model in models:
+            if model not in sub.index or np.isnan(sub.loc[model, "auroc"]):
+                row += 1
+                continue
+            r = sub.loc[model]
+            auroc, lo, hi = r["auroc"], r["auroc_ci_lower"], r["auroc_ci_upper"]
+            color = MODEL_COLORS.get(model, "#aaaaaa")
+            ax.plot(auroc, row, "o", color=color, markersize=5, zorder=3)
+            if not np.isnan(lo) and not np.isnan(hi):
+                ax.plot([lo, hi], [row, row], "-", color=color, linewidth=1.5, zorder=2)
+            group_rows.append(row)
+            row += 1
+        if group_rows:
+            mid = (group_rows[0] + group_rows[-1]) / 2
+            y_ticks.append(mid)
+            y_labels.append(fs.replace("_covs", "").replace("_", " "))
+            # Separator between feature sets
+            ax.axhline(row - 0.5, color="#dddddd", linewidth=0.8)
+        row += 0.5  # gap between feature sets
+
+    ax.axvline(0.5, color="gray", linestyle="--", linewidth=0.8, alpha=0.6, label="random")
+    ax.set_xlim(0.5, min(1.0, metrics_df["auroc"].max() + 0.04))
+    ax.set_yticks(y_ticks)
+    ax.set_yticklabels(y_labels, fontsize=8)
+    ax.invert_yaxis()
+    ax.set_xlabel("AUROC (95% CI)", fontsize=9)
+    ax.set_title("Model performance by feature set", fontsize=11, fontweight="bold")
+
+    handles = [plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=MODEL_COLORS.get(m, "#aaa"),
+                          markersize=6, label=m.replace("_", " ")) for m in models]
+    ax.legend(handles=handles, fontsize=7, frameon=False,
+              bbox_to_anchor=(1.01, 1), loc="upper left", title="Model", title_fontsize=8)
     _save(fig, out_path)
 
 
@@ -438,6 +496,13 @@ def main():
     plot_auroc_heatmap(
         metrics_df, feature_sets,
         os.path.join(args.out_dir, "02_auroc_heatmap.pdf"),
+    )
+
+    # ── 2b. AUROC forest-plot style dot plot (main paper figure) ──────────────
+    print("Plotting AUROC dot plot...")
+    plot_auroc_dotplot(
+        metrics_df, feature_sets,
+        os.path.join(args.out_dir, "02b_auroc_dotplot.pdf"),
     )
 
     # ── 3. Multi-model dot plot (one per feature set) ─────────────────────────
