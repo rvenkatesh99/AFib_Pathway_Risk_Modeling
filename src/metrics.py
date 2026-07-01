@@ -30,17 +30,41 @@ def optimal_threshold_f1(y_true, y_prob):
     return f1_score(y_true, y_pred), best_thresh
 
 
-def compute_metrics(y_true: np.ndarray, y_prob: np.ndarray) -> dict:
+def threshold_metrics(y_true: np.ndarray, y_prob: np.ndarray, threshold: float) -> dict:
+    """Sensitivity, specificity, and balanced accuracy at a fixed threshold."""
+    y_pred = (y_prob >= threshold).astype(int)
+    tp = ((y_pred == 1) & (y_true == 1)).sum()
+    tn = ((y_pred == 0) & (y_true == 0)).sum()
+    fp = ((y_pred == 1) & (y_true == 0)).sum()
+    fn = ((y_pred == 0) & (y_true == 1)).sum()
+    sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+    return {
+        "threshold": float(threshold),
+        "sensitivity": float(sensitivity),
+        "specificity": float(specificity),
+        "balanced_accuracy": float((sensitivity + specificity) / 2),
+    }
+
+
+def compute_metrics(y_true: np.ndarray, y_prob: np.ndarray,
+                    threshold: float = None) -> dict:
+    """
+    threshold: fixed classification threshold for sensitivity/specificity/balanced_accuracy.
+               Defaults to the observed prevalence in y_true.
+    """
     auroc = roc_auc_score(y_true, y_prob)
     auprc = average_precision_score(y_true, y_prob)
     f1, thresh = optimal_threshold_f1(y_true, y_prob)
     brier = brier_score_loss(y_true, y_prob)
+    t = threshold if threshold is not None else float(y_true.mean())
     return {
         "auroc": auroc,
         "auprc": auprc,
         "f1_at_opt_threshold": f1,
         "optimal_threshold": thresh,
         "brier_score": brier,
+        **threshold_metrics(y_true, y_prob, t),
     }
 
 
@@ -57,7 +81,11 @@ def bootstrap_metrics(
     """
     rng = np.random.default_rng(seed)
     n = len(y_true)
-    records = {k: [] for k in ["auroc", "auprc", "f1_at_opt_threshold", "brier_score"]}
+    prevalence = float(y_true.mean())
+    records = {k: [] for k in [
+        "auroc", "auprc", "f1_at_opt_threshold", "brier_score",
+        "sensitivity", "specificity", "balanced_accuracy",
+    ]}
 
     for _ in range(n_iterations):
         idx = rng.integers(0, n, size=n)
@@ -65,7 +93,7 @@ def bootstrap_metrics(
         yp = y_prob[idx]
         if len(np.unique(yt)) < 2:
             continue
-        m = compute_metrics(yt, yp)
+        m = compute_metrics(yt, yp, threshold=prevalence)
         for k in records:
             records[k].append(m[k])
 

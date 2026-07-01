@@ -141,6 +141,9 @@ def main():
         auroc_ci = ci.get("auroc", {})
         auprc_ci = ci.get("auprc", {})
         f1_ci    = ci.get("f1_at_opt_threshold", {})
+        ba_ci    = ci.get("balanced_accuracy", {})
+        sen_ci   = ci.get("sensitivity", {})
+        spe_ci   = ci.get("specificity", {})
 
         metrics_rows.append({
             "feature_set": fs,
@@ -152,6 +155,16 @@ def main():
             "auprc_ci_lower": auprc_ci.get("ci_lower"),
             "auprc_ci_upper": auprc_ci.get("ci_upper"),
             "brier_score": m.get("brier_score"),
+            "threshold": m.get("threshold"),
+            "sensitivity": m.get("sensitivity"),
+            "sensitivity_ci_lower": sen_ci.get("ci_lower"),
+            "sensitivity_ci_upper": sen_ci.get("ci_upper"),
+            "specificity": m.get("specificity"),
+            "specificity_ci_lower": spe_ci.get("ci_lower"),
+            "specificity_ci_upper": spe_ci.get("ci_upper"),
+            "balanced_accuracy": m.get("balanced_accuracy"),
+            "balanced_accuracy_ci_lower": ba_ci.get("ci_lower"),
+            "balanced_accuracy_ci_upper": ba_ci.get("ci_upper"),
             "f1": m.get("f1_at_opt_threshold"),
             "f1_ci_lower": f1_ci.get("ci_lower"),
             "f1_ci_upper": f1_ci.get("ci_upper"),

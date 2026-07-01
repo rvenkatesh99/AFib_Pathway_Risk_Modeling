@@ -271,6 +271,26 @@ def sklearn_grid_search(build_fn, grid, train_X, train_y, val_X, val_y):
 # ── Sklearn runners ───────────────────────────────────────────────────────────
 
 
+def _platt_scale_sklearn(build_fn, X_tr, y_tr, X_va, y_va):
+    """Fit a Platt scaler on val predictions from a train-only model.
+    Returns the scaler; caller applies it to test predictions from the full model."""
+    from sklearn.linear_model import LogisticRegression as _LR
+    cal_model = build_fn()
+    cal_model.fit(X_tr, y_tr)
+    val_probs = cal_model.predict_proba(X_va)[:, 1]
+    eps = 1e-7
+    val_logits = np.log(np.clip(val_probs, eps, 1 - eps) / (1 - np.clip(val_probs, eps, 1 - eps)))
+    scaler = _LR(C=1e6, solver="lbfgs", max_iter=1000)
+    scaler.fit(val_logits.reshape(-1, 1), y_va)
+    return scaler
+
+
+def _apply_platt(scaler, raw_probs):
+    eps = 1e-7
+    logits = np.log(np.clip(raw_probs, eps, 1 - eps) / (1 - np.clip(raw_probs, eps, 1 - eps)))
+    return scaler.predict_proba(logits.reshape(-1, 1))[:, 1]
+
+
 def _run_sklearn_logistic(args, build_fn, model_name,
                           pw, cov, labels, pw_names, cov_cols,
                           idx_tr, idx_va, idx_te, out_dir, hparams_fn=None):
@@ -278,12 +298,17 @@ def _run_sklearn_logistic(args, build_fn, model_name,
     T = pw.shape[2] if pw.ndim == 3 else 1
     splits = [("tr", idx_tr), ("va", idx_va), ("te", idx_te)]
     X = {s: np.concatenate([flatten_pathway_matrix(pw[i]), cov[i]], axis=1) for s, i in splits}
+
+    # Fit Platt scaler on val predictions from a train-only model (unbiased calibration).
+    platt = _platt_scale_sklearn(build_fn, X["tr"], labels[idx_tr], X["va"], labels[idx_va])
+
+    # Refit final model on train+val for maximum data, then calibrate test predictions.
     final_X = np.concatenate([X["tr"], X["va"]])
     final_y = np.concatenate([labels[idx_tr], labels[idx_va]])
     model = build_fn()
     model.fit(final_X, final_y)
     save_model(model, os.path.join(out_dir, f"{model_name}.pkl"))
-    probs = model.predict_proba(X["te"])[:, 1]
+    probs = _apply_platt(platt, model.predict_proba(X["te"])[:, 1])
     ranking, cov_ranking = get_l1_pathway_ranking(model, pw_names, T, cov_cols)
     hparams = hparams_fn(model) if hparams_fn else {}
     save_outputs(out_dir, probs, labels[idx_te], ranking, hparams, None, args.bootstrap_iters,
@@ -332,12 +357,15 @@ def run_random_forest(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va,
     else:
         best_hparams, search_results = DEFAULTS["random_forest"], None
 
+    platt = _platt_scale_sklearn(lambda: build_random_forest(**best_hparams),
+                                 X["tr"], labels[idx_tr], X["va"], labels[idx_va])
+
     final_X = np.concatenate([X["tr"], X["va"]])
     final_y = np.concatenate([labels[idx_tr], labels[idx_va]])
     model = build_random_forest(**best_hparams)
     model.fit(final_X, final_y)
     save_model(model, os.path.join(out_dir, "random_forest.pkl"))
-    probs = model.predict_proba(X["te"])[:, 1]
+    probs = _apply_platt(platt, model.predict_proba(X["te"])[:, 1])
     ranking, cov_ranking = get_rf_pathway_ranking(model, pw_names, T, cov_cols)
     save_outputs(out_dir, probs, labels[idx_te], ranking, best_hparams, search_results, args.bootstrap_iters,
                  covariate_ranking=cov_ranking)
