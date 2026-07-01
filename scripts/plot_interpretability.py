@@ -128,8 +128,10 @@ def plot_auroc_heatmap(metrics_df, feature_sets, out_path):
                         .reindex(index=feature_sets, columns=models))
 
     fig, ax = plt.subplots(figsize=(max(5, len(models) * 1.1), max(3, len(feature_sets) * 0.7)))
-    # Fixed color scale anchored at random (0.5) so comparisons are honest
-    vmin, vmax = 0.5, 1.0
+    # Color scale anchored to actual data range for contrast
+    finite = pivot.values[~np.isnan(pivot.values)]
+    vmin = max(0.5, finite.min() - 0.02)
+    vmax = min(1.0, finite.max() + 0.02)
     im = ax.imshow(pivot.values, aspect="auto", cmap="RdYlGn", vmin=vmin, vmax=vmax)
 
     for i in range(len(feature_sets)):

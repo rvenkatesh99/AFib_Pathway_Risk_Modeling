@@ -135,6 +135,13 @@ def parse_args():
                    help="GNN + graph_method=jaccard: minimum Jaccard similarity for an edge.")
     p.add_argument("--corr_threshold", type=float, default=0.3,
                    help="GNN + graph_method=score_correlation: absolute Pearson threshold for an edge.")
+    p.add_argument("--top_k_pathways", type=int, default=None,
+                   help="Keep only the top-K pathways by the feature selection method. "
+                        "Applied before any model is fit. Omit to use all pathways.")
+    p.add_argument("--feature_selection_method", default="variance",
+                   choices=["variance", "auroc"],
+                   help="Criterion for --top_k_pathways: 'variance' (unsupervised, default) "
+                        "or 'auroc' (univariate AUROC on training set).")
     p.add_argument("--bootstrap_iters", type=int, default=1000)
     return p.parse_args()
 
@@ -198,6 +205,61 @@ def load_splits(splits_dir, pathway_cols=None, covariate_cols=None, covariates_f
 
     splits = np.load(splits_path)
     return pw, cov, labels, pw_names, cov_cols_all, splits["idx_train"], splits["idx_val"], splits["idx_test"]
+
+
+def _select_top_k_pathways(pw, pw_names, labels, idx_tr, k, method="variance"):
+    """Keep top-k pathways by variance (unsupervised) or univariate AUROC (training set only).
+
+    For T>1 matrices, variance is averaged across tissue dimensions per pathway.
+    When multiple feature types are present (e.g. gwas__ + grex_HAA__), variances are
+    rank-normalized within each type before combining so no type dominates due to scale.
+    """
+    pw_tr = pw[idx_tr]
+
+    if method == "variance":
+        # Average variance across tissue dims for T>1
+        raw = pw_tr.var(axis=0)                      # (K,) or (K, T)
+        if raw.ndim == 2:
+            raw = raw.mean(axis=1)                   # (K,)
+
+        # Detect feature type groups from prefix before first '__'
+        prefixes = np.array([n.split("__")[0] for n in pw_names])
+        unique_prefixes = np.unique(prefixes)
+
+        if len(unique_prefixes) > 1:
+            # Rank-normalize within each feature type (0=lowest, 1=highest variance)
+            scores = np.zeros(len(pw_names))
+            for prefix in unique_prefixes:
+                mask = prefixes == prefix
+                group = raw[mask]
+                ranks = group.argsort().argsort().astype(float)
+                scores[mask] = ranks / max(mask.sum() - 1, 1)
+            label = f"rank-normalized variance ({', '.join(unique_prefixes)})"
+        else:
+            scores = raw
+            label = "variance"
+
+    elif method == "auroc":
+        from sklearn.metrics import roc_auc_score
+        y_tr = labels[idx_tr]
+        pw_flat = pw_tr if pw_tr.ndim == 2 else pw_tr[:, :, 0]
+        scores = np.array([roc_auc_score(y_tr, pw_flat[:, i]) for i in range(pw_flat.shape[1])])
+        scores = np.maximum(scores, 1 - scores)
+        label = "univariate AUROC"
+
+    else:
+        raise ValueError(f"Unknown feature selection method: {method!r}. Use 'variance' or 'auroc'.")
+
+    top_idx = np.sort(np.argsort(scores)[::-1][:k])
+    pw_sel  = pw[:, top_idx] if pw.ndim == 2 else pw[:, top_idx, :]
+    names_sel = [pw_names[i] for i in top_idx]
+
+    # Report per-type counts when multiple feature types present
+    prefixes_sel = np.array([n.split("__")[0] for n in names_sel])
+    type_counts = {p: (prefixes_sel == p).sum() for p in np.unique(prefixes_sel)}
+    type_str = ", ".join(f"{p}={c}" for p, c in type_counts.items())
+    print(f"  [feature selection] kept {k}/{len(pw_names)} pathways by {label} ({type_str})")
+    return pw_sel, names_sel
 
 
 def _make_loaders(pw, cov, labels, idx_tr, idx_va, idx_te):
@@ -610,6 +672,10 @@ def main():
         covariates_file=args.covariates_file,
     )
     _done("loading data", args.model, t)
+
+    if args.top_k_pathways is not None and pw.shape[1] > args.top_k_pathways:
+        pw, pw_names = _select_top_k_pathways(
+            pw, pw_names, labels, idx_tr, args.top_k_pathways, args.feature_selection_method)
 
     K, T, C = _dims(pw, cov) if pw.ndim >= 2 else (0, 0, cov.shape[1])
     feature_desc = f"{K} pathways (T={T}), {C} covariates"
