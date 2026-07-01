@@ -87,9 +87,9 @@ DEFAULTS = {
     "elasticnet":          {},
     "unregularized_logistic": {},
     "random_forest":       {"n_estimators": 500, "max_depth": 12, "min_samples_leaf": 20},
-    "global_attention":    {"embed_dim": 64, "dropout": 0.1, "lr": 1e-3, "weight_decay": 1e-4},
-    "transformer":         {"embed_dim": 64, "n_heads": 4, "dropout": 0.1, "lr": 1e-3, "weight_decay": 1e-4},
-    "gnn":                 {"embed_dim": 64, "dropout": 0.1, "lr": 1e-3, "weight_decay": 1e-3},
+    "global_attention":    {"embed_dim": 128, "dropout": 0.1, "lr": 1e-3, "weight_decay": 1e-4},
+    "transformer":         {"embed_dim": 128, "n_heads": 4, "dropout": 0.2, "lr": 1e-3, "weight_decay": 1e-4},
+    "gnn":                 {"embed_dim": 128, "dropout": 0.1, "lr": 1e-3, "weight_decay": 1e-4},
 }
 
 # Final training settings (not tuned).
