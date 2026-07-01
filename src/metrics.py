@@ -117,12 +117,6 @@ def _fastDeLong(y_true, prob_pred_1, prob_pred_2):
     def _auc_and_structural_components(probs):
         m_r = _compute_midrank(probs)
         auc = (m_r[pos_mask].sum() - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg)
-        tx = np.zeros(n_pos)
-        ty = np.zeros(n_neg)
-        for pi, pv in enumerate(probs[pos_mask]):
-            ty += (pv > probs[neg_mask]).astype(float) + 0.5 * (pv == probs[neg_mask]).astype(float)
-        tx = ty.mean() * np.ones(n_pos)  # simplified; full version below
-        # Structural components (placement values)
         pos_probs = probs[pos_mask]
         neg_probs = probs[neg_mask]
         V10 = np.array([
@@ -286,7 +280,8 @@ def calibration_slope(y_true: np.ndarray, y_prob: np.ndarray) -> dict:
     Perfect calibration: intercept=0, slope=1.
     """
     eps    = 1e-7
-    logits = np.log(np.clip(y_prob, eps, 1 - eps))
+    p      = np.clip(y_prob, eps, 1 - eps)
+    logits = np.log(p / (1 - p))
     lr     = LogisticRegression(fit_intercept=True, C=1e6, solver="lbfgs", max_iter=1000)
     lr.fit(logits.reshape(-1, 1), y_true)
     return {
