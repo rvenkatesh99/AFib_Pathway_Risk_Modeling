@@ -122,38 +122,96 @@ def plot_auroc_comparison(metrics_df, feature_sets, out_path):
 
 # ── 2. AUROC heatmap ──────────────────────────────────────────────────────────
 
-def plot_auroc_heatmap(metrics_df, feature_sets, out_path):
-    models = _model_order(metrics_df["model"].unique())
-    pivot  = (metrics_df.pivot(index="feature_set", columns="model", values="auroc")
-                        .reindex(index=feature_sets, columns=models))
-
-    fig, ax = plt.subplots(figsize=(max(5, len(models) * 1.1), max(3, len(feature_sets) * 0.7)))
-    # Color scale anchored to actual data range for contrast
+def _draw_heatmap(ax, pivot, feature_sets, models, title, vmin=None, vmax=None):
+    """Render a single AUROC heatmap panel onto ax."""
     finite = pivot.values[~np.isnan(pivot.values)]
-    vmin = max(0.5, finite.min() - 0.02)
-    vmax = min(1.0, finite.max() + 0.02)
+    if len(finite) == 0:
+        ax.set_visible(False)
+        return None
+    if vmin is None:
+        vmin = max(0.5, finite.min() - 0.02)
+    if vmax is None:
+        vmax = min(1.0, finite.max() + 0.02)
     im = ax.imshow(pivot.values, aspect="auto", cmap="RdYlGn", vmin=vmin, vmax=vmax)
-
     for i in range(len(feature_sets)):
         for j in range(len(models)):
             v = pivot.values[i, j]
             if not np.isnan(v):
-                # White text on dark cells, black on light
                 bg = (v - vmin) / (vmax - vmin)
                 color = "white" if bg < 0.45 else "black"
-                ax.text(j, i, f"{v:.3f}", ha="center", va="center", fontsize=7, color=color,
-                        fontweight="bold")
-
+                ax.text(j, i, f"{v:.3f}", ha="center", va="center", fontsize=7,
+                        color=color, fontweight="bold")
     ax.set_xticks(range(len(models)))
     ax.set_xticklabels([m.replace("_", "\n") for m in models], fontsize=8)
     ax.set_yticks(range(len(feature_sets)))
     ax.set_yticklabels([fs.replace("_covs", "").replace("_", " ") for fs in feature_sets], fontsize=8)
-    cbar = plt.colorbar(im, ax=ax, fraction=0.03, pad=0.02)
-    cbar.set_label("AUROC", fontsize=9)
-    cbar.set_ticks([0.5, 0.6, 0.7, 0.8, 0.9, 1.0])
-    ax.set_title("AUROC by feature set and model", fontsize=11, fontweight="bold")
+    ax.set_title(title, fontsize=10, fontweight="bold")
     ax.set_xlabel("Model", fontsize=9)
     ax.set_ylabel("Feature set", fontsize=9)
+    return im
+
+
+def plot_auroc_heatmap(metrics_df, feature_sets, out_path):
+    # Split models: GNN uses full pathway set (not top-500), so it is not
+    # directly comparable to other models and is shown in a separate panel.
+    GNN_MODELS = {"gnn"}
+    all_models  = _model_order(metrics_df["model"].unique())
+    main_models = [m for m in all_models if m not in GNN_MODELS]
+    gnn_models  = [m for m in all_models if m in GNN_MODELS]
+
+    pivot_main = (metrics_df[~metrics_df["model"].isin(GNN_MODELS)]
+                  .pivot(index="feature_set", columns="model", values="auroc")
+                  .reindex(index=feature_sets, columns=main_models))
+
+    pivot_gnn  = (metrics_df[metrics_df["model"].isin(GNN_MODELS)]
+                  .pivot(index="feature_set", columns="model", values="auroc")
+                  .reindex(index=feature_sets, columns=gnn_models))
+
+    has_gnn = gnn_models and not pivot_gnn.isnull().all().all()
+
+    # Shared vmin/vmax across both panels for a consistent colour scale
+    all_finite = metrics_df["auroc"].dropna().values
+    vmin = max(0.5, all_finite.min() - 0.02) if len(all_finite) else 0.5
+    vmax = min(1.0, all_finite.max() + 0.02) if len(all_finite) else 1.0
+
+    if has_gnn:
+        # Two-panel figure: main models left, GNN right (narrower)
+        gnn_width_ratio = max(1, len(gnn_models)) / max(1, len(main_models))
+        fig, (ax_main, ax_gnn) = plt.subplots(
+            1, 2,
+            figsize=(
+                max(5, len(main_models) * 1.1) + max(2, len(gnn_models) * 1.4),
+                max(3, len(feature_sets) * 0.7),
+            ),
+            gridspec_kw={"width_ratios": [len(main_models), max(1, len(gnn_models))]},
+        )
+        im = _draw_heatmap(ax_main, pivot_main, feature_sets, main_models,
+                           "AUROC by feature set and model\n(top-500 pathway subset)",
+                           vmin=vmin, vmax=vmax)
+        _draw_heatmap(ax_gnn, pivot_gnn, feature_sets, gnn_models,
+                      "GNN — full pathway graph\n(not directly comparable)",
+                      vmin=vmin, vmax=vmax)
+        ax_gnn.set_ylabel("")
+        ax_gnn.set_yticklabels([])
+        # Vertical divider to visually separate panels
+        fig.text(0.5, 0.5, "│", ha="center", va="center",
+                 fontsize=20, color="#aaaaaa", transform=fig.transFigure)
+        if im is not None:
+            cbar = fig.colorbar(im, ax=[ax_main, ax_gnn], fraction=0.02, pad=0.02)
+            cbar.set_label("AUROC", fontsize=9)
+            cbar.set_ticks([0.5, 0.6, 0.7, 0.8, 0.9, 1.0])
+        fig.suptitle("AUROC by feature set and model", fontsize=11, fontweight="bold", y=1.01)
+    else:
+        fig, ax = plt.subplots(
+            figsize=(max(5, len(main_models) * 1.1), max(3, len(feature_sets) * 0.7))
+        )
+        im = _draw_heatmap(ax, pivot_main, feature_sets, main_models,
+                           "AUROC by feature set and model", vmin=vmin, vmax=vmax)
+        if im is not None:
+            cbar = plt.colorbar(im, ax=ax, fraction=0.03, pad=0.02)
+            cbar.set_label("AUROC", fontsize=9)
+            cbar.set_ticks([0.5, 0.6, 0.7, 0.8, 0.9, 1.0])
+
     _save(fig, out_path)
 
 
