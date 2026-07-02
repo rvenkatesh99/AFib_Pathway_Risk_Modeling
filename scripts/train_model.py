@@ -27,6 +27,7 @@ import os
 import sys
 import time
 import numpy as np
+import pandas as pd
 import torch
 from sklearn.preprocessing import StandardScaler
 
@@ -672,6 +673,20 @@ def main():
         covariates_file=args.covariates_file,
     )
     _done("loading data", args.model, t)
+
+    if args.prs_col is not None:
+        splits_dir = args.splits_dir or args.results_dir
+        with open(os.path.join(splits_dir, "data_config.json")) as f:
+            _cfg = json.load(f)
+        _cov_path = args.covariates_file or _cfg["covariates"]
+        _cov_df = pd.read_csv(_cov_path) if _cov_path.endswith(".csv") else pd.read_parquet(_cov_path)
+        if args.prs_col not in _cov_df.columns:
+            raise ValueError(f"--prs_col {args.prs_col!r} not found in {_cov_path}. "
+                             f"Available columns: {list(_cov_df.columns)}")
+        prs_vals = _cov_df[args.prs_col].values.astype(np.float32).reshape(-1, 1)
+        cov = np.concatenate([cov, prs_vals], axis=1)
+        cov_cols = list(cov_cols) + [args.prs_col]
+        print(f"  [prs] appended {args.prs_col} as covariate (C={cov.shape[1]})", flush=True)
 
     if args.top_k_pathways is not None and pw.shape[1] > args.top_k_pathways:
         pw, pw_names = _select_top_k_pathways(
