@@ -131,6 +131,9 @@ def parse_args():
     p.add_argument("--string_min_shared_genes", type=int, default=5,
                    help="GNN + graph_method=string: minimum shared STRING-interacting gene pairs for a pathway edge. "
                         "Higher values = sparser graph, lower memory. Default 5.")
+    p.add_argument("--string_min_confidence", type=int, default=700,
+                   help="GNN + graph_method=string: minimum STRING confidence score (0-1000). "
+                        "400=medium, 700=high, 900=very high. Default 700.")
     p.add_argument("--pathway_gene_sets", default=None,
                    help="GNN + graph_method in {jaccard,string}: JSON mapping prefixed pathway name → list of gene symbols.")
     p.add_argument("--jaccard_min_overlap", type=int, default=3,
@@ -591,6 +594,7 @@ def run_gnn(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, o
             gene_sets, list(zip(ppi_df.gene1, ppi_df.gene2, ppi_df.confidence)),
             pathway_names=pw_names,
             min_shared_genes=args.string_min_shared_genes,
+            min_confidence=args.string_min_confidence,
         )
 
     elif method == "fully_connected":

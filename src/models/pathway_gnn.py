@@ -224,18 +224,20 @@ def build_string_edge_index(
     pathway_gene_sets: dict,
     ppi_edges: list,
     min_shared_genes: int = 5,
+    min_confidence: int = 700,
     pathway_names: list = None,
 ) -> torch.Tensor:
     """
     Build edge_index from STRING PPI data using sparse matrix multiplication.
 
     Two pathways are connected if they share >= min_shared_genes PPI-linked
-    gene pairs.  Uses A^T B A sparse matrix multiply to avoid O(E * P^2)
-    intermediate blowup.
+    gene pairs (after filtering STRING edges to >= min_confidence).
+    Uses A^T B A sparse matrix multiply to avoid O(E * P^2) intermediate blowup.
 
     pathway_gene_sets: {pathway_name: set_of_gene_ids}
     ppi_edges: list of (gene1, gene2, confidence_score) tuples
     min_shared_genes: minimum shared PPI-connected gene pairs for an edge
+    min_confidence: STRING confidence threshold (0-1000); 400=medium, 700=high, 900=very high
     pathway_names: ordered list of pathway names (determines node indices)
 
     Returns edge_index (2, E) LongTensor (undirected, self-loops excluded).
@@ -272,10 +274,14 @@ def build_string_edge_index(
     A = csr_matrix((np.ones(len(rows), dtype=np.float32), (rows, cols)), shape=(G, K))
 
     # Build gene × gene PPI adjacency matrix B (G × G) sparse — symmetric
+    # Filter to high-confidence interactions only before building the graph
     ppi_rows, ppi_cols = [], []
-    for g1, g2, _ in ppi_edges:
+    for g1, g2, conf in ppi_edges:
+        if conf < min_confidence:
+            continue
         i1 = gene_to_idx.get(g1)
         i2 = gene_to_idx.get(g2)
+
         if i1 is not None and i2 is not None and i1 != i2:
             ppi_rows.extend([i1, i2])
             ppi_cols.extend([i2, i1])
