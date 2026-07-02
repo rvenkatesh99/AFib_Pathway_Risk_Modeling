@@ -227,7 +227,11 @@ def build_string_edge_index(
     pathway_names: list = None,
 ) -> torch.Tensor:
     """
-    Build edge_index from STRING PPI data.
+    Build edge_index from STRING PPI data using sparse matrix multiplication.
+
+    Two pathways are connected if they share >= min_shared_genes PPI-linked
+    gene pairs.  Uses A^T B A sparse matrix multiply to avoid O(E * P^2)
+    intermediate blowup.
 
     pathway_gene_sets: {pathway_name: set_of_gene_ids}
     ppi_edges: list of (gene1, gene2, confidence_score) tuples
@@ -237,52 +241,61 @@ def build_string_edge_index(
     Returns edge_index (2, E) LongTensor (undirected, self-loops excluded).
     """
     import numpy as np
-    import pandas as pd
+    from scipy.sparse import csr_matrix
 
     if pathway_names is None:
         pathway_names = list(pathway_gene_sets.keys())
     name_to_idx = {n: i for i, n in enumerate(pathway_names)}
+    K = len(pathway_names)
 
-    # Gene → pathway membership (long format)
-    gp_records = [
-        (gene, name_to_idx[name])
-        for name, genes in pathway_gene_sets.items()
-        if name in name_to_idx
-        for gene in genes
-    ]
-    if not gp_records:
-        return torch.zeros(2, 0, dtype=torch.long)
-    gp = pd.DataFrame(gp_records, columns=["gene", "pathway_idx"])
+    # Collect all unique genes that appear in at least one pathway
+    gene_set = set()
+    for name, genes in pathway_gene_sets.items():
+        if name in name_to_idx:
+            gene_set.update(genes)
+    gene_to_idx = {g: i for i, g in enumerate(sorted(gene_set))}
+    G = len(gene_to_idx)
 
-    # PPI edges as dataframe — deduplicate, drop self-loops
-    ppi_df = pd.DataFrame(ppi_edges, columns=["gene1", "gene2", "conf"])[["gene1", "gene2"]]
-    ppi_df = ppi_df[ppi_df["gene1"] != ppi_df["gene2"]].drop_duplicates()
-
-    # For each PPI edge, join pathway memberships of both endpoints
-    m = (ppi_df
-         .merge(gp, left_on="gene1", right_on="gene")
-         .rename(columns={"pathway_idx": "p1"})
-         [["gene2", "p1"]]
-         .merge(gp, left_on="gene2", right_on="gene")
-         .rename(columns={"pathway_idx": "p2"})
-         [["p1", "p2"]])
-
-    # Drop intra-pathway pairs; normalize direction so (pa, pb) is canonical
-    m = m[m["p1"] != m["p2"]]
-    m["pa"] = np.minimum(m["p1"].values, m["p2"].values)
-    m["pb"] = np.maximum(m["p1"].values, m["p2"].values)
-
-    # Count shared PPI-linked gene pairs per pathway pair
-    counts = (m.groupby(["pa", "pb"], sort=False)
-               .size()
-               .reset_index(name="n"))
-    counts = counts[counts["n"] >= min_shared_genes]
-
-    if counts.empty:
+    if G == 0 or K == 0:
         return torch.zeros(2, 0, dtype=torch.long)
 
-    pa = counts["pa"].values
-    pb = counts["pb"].values
+    # Build gene × pathway binary membership matrix A (G × K) sparse
+    rows, cols = [], []
+    for name, genes in pathway_gene_sets.items():
+        if name not in name_to_idx:
+            continue
+        p_idx = name_to_idx[name]
+        for g in genes:
+            if g in gene_to_idx:
+                rows.append(gene_to_idx[g])
+                cols.append(p_idx)
+    A = csr_matrix((np.ones(len(rows), dtype=np.float32), (rows, cols)), shape=(G, K))
+
+    # Build gene × gene PPI adjacency matrix B (G × G) sparse — symmetric
+    ppi_rows, ppi_cols = [], []
+    for g1, g2, _ in ppi_edges:
+        i1 = gene_to_idx.get(g1)
+        i2 = gene_to_idx.get(g2)
+        if i1 is not None and i2 is not None and i1 != i2:
+            ppi_rows.extend([i1, i2])
+            ppi_cols.extend([i2, i1])
+    if not ppi_rows:
+        return torch.zeros(2, 0, dtype=torch.long)
+    B = csr_matrix((np.ones(len(ppi_rows), dtype=np.float32), (ppi_rows, ppi_cols)),
+                   shape=(G, G))
+
+    # C = A^T B A  →  C[p, q] = number of PPI-linked gene pairs between pathway p and pathway q
+    C = (A.T @ B @ A).toarray()
+    np.fill_diagonal(C, 0)
+
+    # Apply threshold and extract edges
+    pa, pb = np.where(C >= min_shared_genes)
+    mask = pa < pb  # upper triangle only (undirected)
+    pa, pb = pa[mask], pb[mask]
+
+    if len(pa) == 0:
+        return torch.zeros(2, 0, dtype=torch.long)
+
     src = np.concatenate([pa, pb])
     dst = np.concatenate([pb, pa])
     return torch.tensor(np.stack([src, dst]), dtype=torch.long)
