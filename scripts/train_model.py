@@ -128,6 +128,9 @@ def parse_args():
                    help="GNN only. How to construct pathway graph edges.")
     p.add_argument("--string_edges", default=None,
                    help="GNN + graph_method=string: CSV with columns gene1,gene2,confidence (HGNC symbols).")
+    p.add_argument("--string_min_shared_genes", type=int, default=5,
+                   help="GNN + graph_method=string: minimum shared STRING-interacting gene pairs for a pathway edge. "
+                        "Higher values = sparser graph, lower memory. Default 5.")
     p.add_argument("--pathway_gene_sets", default=None,
                    help="GNN + graph_method in {jaccard,string}: JSON mapping prefixed pathway name → list of gene symbols.")
     p.add_argument("--jaccard_min_overlap", type=int, default=3,
@@ -587,6 +590,7 @@ def run_gnn(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, o
         edge_index = build_string_edge_index(
             gene_sets, list(zip(ppi_df.gene1, ppi_df.gene2, ppi_df.confidence)),
             pathway_names=pw_names,
+            min_shared_genes=args.string_min_shared_genes,
         )
 
     elif method == "fully_connected":

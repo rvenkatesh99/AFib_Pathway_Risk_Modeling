@@ -223,7 +223,7 @@ class PathwayGNN(nn.Module):
 def build_string_edge_index(
     pathway_gene_sets: dict,
     ppi_edges: list,
-    min_shared_genes: int = 2,
+    min_shared_genes: int = 5,
     pathway_names: list = None,
 ) -> torch.Tensor:
     """
@@ -236,46 +236,56 @@ def build_string_edge_index(
 
     Returns edge_index (2, E) LongTensor (undirected, self-loops excluded).
     """
+    import numpy as np
+    import pandas as pd
+
     if pathway_names is None:
         pathway_names = list(pathway_gene_sets.keys())
     name_to_idx = {n: i for i, n in enumerate(pathway_names)}
-    K = len(pathway_names)
 
-    # Build gene -> pathway index
-    gene_to_pathways = {}
-    for name, genes in pathway_gene_sets.items():
-        if name not in name_to_idx:
-            continue
-        idx = name_to_idx[name]
-        for g in genes:
-            gene_to_pathways.setdefault(g, set()).add(idx)
+    # Gene → pathway membership (long format)
+    gp_records = [
+        (gene, name_to_idx[name])
+        for name, genes in pathway_gene_sets.items()
+        if name in name_to_idx
+        for gene in genes
+    ]
+    if not gp_records:
+        return torch.zeros(2, 0, dtype=torch.long)
+    gp = pd.DataFrame(gp_records, columns=["gene", "pathway_idx"])
 
-    # PPI gene pairs (CSV is pre-filtered to desired confidence threshold)
-    ppi_gene_pairs = set()
-    for g1, g2, conf in ppi_edges:
-        ppi_gene_pairs.add((min(g1, g2), max(g1, g2)))
+    # PPI edges as dataframe — deduplicate, drop self-loops
+    ppi_df = pd.DataFrame(ppi_edges, columns=["gene1", "gene2", "conf"])[["gene1", "gene2"]]
+    ppi_df = ppi_df[ppi_df["gene1"] != ppi_df["gene2"]].drop_duplicates()
 
-    # Count shared PPI-linked genes between pathway pairs
-    shared_counts = {}
-    for g1, g2 in ppi_gene_pairs:
-        paths1 = gene_to_pathways.get(g1, set())
-        paths2 = gene_to_pathways.get(g2, set())
-        for p1 in paths1:
-            for p2 in paths2:
-                if p1 != p2:
-                    key = (min(p1, p2), max(p1, p2))
-                    shared_counts[key] = shared_counts.get(key, 0) + 1
+    # For each PPI edge, join pathway memberships of both endpoints
+    m = (ppi_df
+         .merge(gp, left_on="gene1", right_on="gene")
+         .rename(columns={"pathway_idx": "p1"})
+         [["gene2", "p1"]]
+         .merge(gp, left_on="gene2", right_on="gene")
+         .rename(columns={"pathway_idx": "p2"})
+         [["p1", "p2"]])
 
-    src, dst = [], []
-    for (p1, p2), count in shared_counts.items():
-        if count >= min_shared_genes:
-            src.extend([p1, p2])
-            dst.extend([p2, p1])
+    # Drop intra-pathway pairs; normalize direction so (pa, pb) is canonical
+    m = m[m["p1"] != m["p2"]]
+    m["pa"] = np.minimum(m["p1"].values, m["p2"].values)
+    m["pb"] = np.maximum(m["p1"].values, m["p2"].values)
 
-    if not src:
+    # Count shared PPI-linked gene pairs per pathway pair
+    counts = (m.groupby(["pa", "pb"], sort=False)
+               .size()
+               .reset_index(name="n"))
+    counts = counts[counts["n"] >= min_shared_genes]
+
+    if counts.empty:
         return torch.zeros(2, 0, dtype=torch.long)
 
-    return torch.tensor([src, dst], dtype=torch.long)
+    pa = counts["pa"].values
+    pb = counts["pb"].values
+    src = np.concatenate([pa, pb])
+    dst = np.concatenate([pb, pa])
+    return torch.tensor(np.stack([src, dst]), dtype=torch.long)
 
 
 def build_jaccard_edge_index(
