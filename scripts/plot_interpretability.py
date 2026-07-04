@@ -22,6 +22,7 @@ Usage:
 
 import argparse
 import os
+import textwrap
 import numpy as np
 import pandas as pd
 import matplotlib
@@ -177,6 +178,9 @@ def plot_auroc_comparison(metrics_df, feature_sets, out_path):
 
 def _draw_heatmap(ax, pivot, feature_sets, models, title, vmin=None, vmax=None):
     """Render a single AUROC heatmap panel onto ax."""
+    assert pivot.shape[0] == len(feature_sets), (
+        f"pivot rows ({pivot.shape[0]}) != feature_sets ({len(feature_sets)})"
+    )
     finite = pivot.values[~np.isnan(pivot.values)]
     if len(finite) == 0:
         ax.set_visible(False)
@@ -242,7 +246,8 @@ def plot_auroc_heatmap(metrics_df, feature_sets, out_path):
         tick_step = 0.01
         ticks = np.arange(np.ceil(vmin / tick_step) * tick_step,
                           vmax + tick_step / 2, tick_step)
-        cbar.set_ticks(np.round(ticks, 3))
+        ticks = np.round(ticks[ticks <= vmax + 1e-9], 3)
+        cbar.set_ticks(ticks)
 
     _save(fig, out_path)
 
@@ -395,8 +400,6 @@ def plot_cross_tissue_heatmap(ranking_df, model, top_n, out_path):
     ax.set_xticks(range(n_tissues))
     ax.set_xticklabels(top.columns, fontsize=9)
     ax.set_yticks(range(n_pathways))
-
-    import textwrap
 
     def _wrap(name, width=45):
         return "\n".join(textwrap.wrap(name.replace("_", " "), width=width))

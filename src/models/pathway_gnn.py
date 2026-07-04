@@ -149,15 +149,11 @@ class PathwayGNN(nn.Module):
         batch_size, K, T = pathway_features.shape
         device = pathway_features.device
 
-        x_flat = pathway_features.reshape(batch_size * K, T)
-        x = self.input_proj(x_flat)  # (batch*K, embed_dim)
-
         if self.fully_connected:
-            # Ablation: all pathways connected — equivalent to global pooling
-            # after one mean-aggregation SAGE step, without materialising K*(K-1) edges
+            x = self.input_proj(pathway_features.reshape(batch_size * K, T))
             x = x.reshape(batch_size, K, self.embed_dim)
-            x_mean = x.mean(dim=1)           # (batch, embed_dim)
-            x_max  = x.max(dim=1).values     # (batch, embed_dim)
+            x_mean = x.mean(dim=1)
+            x_max  = x.max(dim=1).values
         else:
             if edge_index is None:
                 edge_index = self.edge_index
@@ -170,7 +166,6 @@ class PathwayGNN(nn.Module):
             for layer in self.sage_layers:
                 x = layer(x, batch_edge_index)
 
-            batch_vec = torch.arange(batch_size, device=device).repeat_interleave(K)
             x_mean = global_mean_pool(x, batch_vec)
             x_max  = global_max_pool(x, batch_vec)
 
@@ -212,14 +207,15 @@ class PathwayGNN(nn.Module):
             combined = torch.cat([graph_repr, cov_embed], dim=-1)
             logits = self.output_head(combined).squeeze(-1)
             logits.sum().backward()
-            grads = activations.grad  # (batch, K, embed_dim)
+            grads = activations.grad
+            if grads is None:
+                raise RuntimeError("GradCAM: activations.grad is None — retain_grad() did not capture gradients")
             scores = F.relu((grads * activations).mean(dim=-1))  # (batch, K)
             return scores.detach()
 
         x_flat, batch_edge_index, batch_vec = self._build_batch_graph(pathway_features, edge_index)
         x = self.input_proj(x_flat)
 
-        # Track activations after the last SAGE layer
         for layer in self.sage_layers:
             x = layer(x, batch_edge_index)
 
@@ -227,7 +223,7 @@ class PathwayGNN(nn.Module):
         activations.retain_grad()
 
         x_mean = global_mean_pool(activations, batch_vec)
-        x_max = global_max_pool(activations, batch_vec)
+        x_max  = global_max_pool(activations, batch_vec)
         graph_repr = torch.cat([x_mean, x_max], dim=-1)
         cov_embed = self.covariate_encoder(covariates)
         combined = torch.cat([graph_repr, cov_embed], dim=-1)
@@ -235,7 +231,9 @@ class PathwayGNN(nn.Module):
 
         logits.sum().backward()
 
-        grads = activations.grad  # (batch*K, embed_dim)
+        grads = activations.grad
+        if grads is None:
+            raise RuntimeError("GradCAM: activations.grad is None — retain_grad() did not capture gradients")
         scores = F.relu((grads * activations).mean(dim=-1))  # (batch*K,)
         return scores.reshape(batch_size, K).detach()
 
