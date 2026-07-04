@@ -190,9 +190,32 @@ class PathwayGNN(nn.Module):
         Returns node importance scores of shape (batch, K).
         """
         if edge_index is None:
-            edge_index = self.edge_index
+            edge_index = getattr(self, 'edge_index', None)
 
-        pathway_features = pathway_features.requires_grad_(True)
+        if edge_index is None and not getattr(self, 'fully_connected', False):
+            raise ValueError("edge_index must be provided for non-fully-connected GNN")
+
+        batch_size = pathway_features.size(0)
+        K = self.n_pathways
+        pathway_features = pathway_features.detach().requires_grad_(True)
+
+        if getattr(self, 'fully_connected', False):
+            x_flat = pathway_features.reshape(batch_size * K, pathway_features.size(2))
+            x = self.input_proj(x_flat)
+            x = x.reshape(batch_size, K, self.embed_dim)
+            activations = x
+            activations.retain_grad()
+            x_mean = activations.mean(dim=1)
+            x_max  = activations.max(dim=1).values
+            graph_repr = torch.cat([x_mean, x_max], dim=-1)
+            cov_embed = self.covariate_encoder(covariates)
+            combined = torch.cat([graph_repr, cov_embed], dim=-1)
+            logits = self.output_head(combined).squeeze(-1)
+            logits.sum().backward()
+            grads = activations.grad  # (batch, K, embed_dim)
+            scores = F.relu((grads * activations).mean(dim=-1))  # (batch, K)
+            return scores.detach()
+
         x_flat, batch_edge_index, batch_vec = self._build_batch_graph(pathway_features, edge_index)
         x = self.input_proj(x_flat)
 
@@ -213,10 +236,7 @@ class PathwayGNN(nn.Module):
         logits.sum().backward()
 
         grads = activations.grad  # (batch*K, embed_dim)
-        # GradCAM: relu(mean over channels of grad * activation)
         scores = F.relu((grads * activations).mean(dim=-1))  # (batch*K,)
-        batch_size = pathway_features.size(0)
-        K = self.n_pathways
         return scores.reshape(batch_size, K).detach()
 
 
@@ -294,13 +314,19 @@ def build_string_edge_index(
     C = (A.T @ B @ A).toarray()
     np.fill_diagonal(C, 0)
 
-    # Apply threshold and extract edges
-    pa, pb = np.where(C >= min_shared_genes)
+    C_thresh = np.where(C >= min_shared_genes, C, 0.0)
+
+    pa, pb = np.where(C_thresh > 0)
     mask = pa < pb  # upper triangle only (undirected)
     pa, pb = pa[mask], pb[mask]
 
     if len(pa) == 0:
         return torch.zeros(2, 0, dtype=torch.long)
+
+    n_edges = len(pa)
+    print(f"  [string graph] {n_edges:,} undirected edges "
+          f"(min_shared={min_shared_genes}, min_conf={min_confidence})",
+          flush=True)
 
     src = np.concatenate([pa, pb])
     dst = np.concatenate([pb, pa])

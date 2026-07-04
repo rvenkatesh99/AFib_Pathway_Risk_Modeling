@@ -135,7 +135,7 @@ def parse_args():
                    help="GNN + graph_method=string: minimum STRING confidence score (0-1000). "
                         "400=medium, 700=high, 900=very high. Default 700.")
     p.add_argument("--pathway_gene_sets", default=None,
-                   help="GNN + graph_method in {jaccard,string}: JSON mapping prefixed pathway name → list of gene symbols.")
+                   help="GNN + graph_method in {jaccard,string}: JSON mapping pathway name → list of gene symbols.")
     p.add_argument("--jaccard_min_overlap", type=int, default=3,
                    help="GNN + graph_method=jaccard: minimum shared genes for an edge.")
     p.add_argument("--jaccard_min_score", type=float, default=0.1,

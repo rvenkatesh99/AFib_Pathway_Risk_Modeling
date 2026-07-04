@@ -34,16 +34,69 @@ import matplotlib.patches as mpatches
 MODEL_ORDER = [
     "l1_logistic", "elasticnet",
     "random_forest", "global_attention", "transformer", "gnn",
+    "gnn_jaccard", "gnn_score_correlation", "gnn_string", "gnn_fully_connected",
 ]
 
 MODEL_COLORS = {
-    "l1_logistic":         "#b2abd2",
-    "elasticnet":          "#8073ac",
-    "random_forest":       "#f4a582",
-    "global_attention":    "#2166ac",
-    "transformer":         "#4dac26",
-    "gnn":                 "#d01c8b",
+    "l1_logistic":            "#b2abd2",
+    "elasticnet":             "#8073ac",
+    "random_forest":          "#f4a582",
+    "global_attention":       "#2166ac",
+    "transformer":            "#4dac26",
+    "gnn":                    "#d01c8b",
+    "gnn_jaccard":            "#d01c8b",
+    "gnn_score_correlation":  "#e56fac",
+    "gnn_string":             "#f0a0cc",
+    "gnn_fully_connected":    "#c0007a",
 }
+
+# Logical display order for feature set rows (actual names in metrics CSV).
+# Rows not in this list are appended alphabetically at the end.
+PREFERRED_ROW_ORDER = [
+    "covs_only",
+    "prs_only",
+    "prs",
+    "gwas",
+    "gwas_covs",
+    "grex_AA_covs",
+    "grex_AC_covs",
+    "grex_HAA_covs",
+    "grex_HLV_covs",
+    "grex_WB_covs",
+    "grex_all_covs",
+    "gwas_grex_HAA_HLV_covs",
+    "gwas_grex_HAA_HLV_AA_covs",
+    "gwas_prs",
+    "gwas_grex_HAA_HLV_prs",
+    "gwas_grex_HAA_HLV_AA_prs",
+]
+
+# Graph method suffixes added to GNN results directories
+_GNN_GRAPH_SUFFIXES = [
+    "_fully_connected", "_jaccard", "_score_correlation", "_string",
+]
+
+
+def _normalize_gnn_rows(df):
+    """Strip graph method suffix from GNN feature_set names, encode in model column.
+
+    e.g. feature_set="gwas_prs_jaccard", model="gnn"
+      -> feature_set="gwas_prs", model="gnn_jaccard"
+    """
+    df = df.copy()
+    for suffix in _GNN_GRAPH_SUFFIXES:
+        method = suffix.lstrip("_")
+        mask = (df["model"] == "gnn") & df["feature_set"].str.endswith(suffix)
+        df.loc[mask, "feature_set"] = df.loc[mask, "feature_set"].str[: -len(suffix)]
+        df.loc[mask, "model"] = "gnn_" + method
+    return df
+
+
+def _ordered_feature_sets(all_fs):
+    """Return feature sets in logical display order."""
+    preferred = [fs for fs in PREFERRED_ROW_ORDER if fs in all_fs]
+    extra = sorted(fs for fs in all_fs if fs not in set(PREFERRED_ROW_ORDER))
+    return preferred + extra
 
 GREX_TISSUES = ["grex_AC_covs", "grex_AA_covs", "grex_HAA_covs", "grex_HLV_covs", "grex_WB_covs"]
 TISSUE_LABELS = {
@@ -152,65 +205,44 @@ def _draw_heatmap(ax, pivot, feature_sets, models, title, vmin=None, vmax=None):
 
 
 def plot_auroc_heatmap(metrics_df, feature_sets, out_path):
-    # Split models: GNN uses full pathway set (not top-500), so it is not
-    # directly comparable to other models and is shown in a separate panel.
-    GNN_MODELS = {"gnn"}
+    # GNN results are reported in a separate table; exclude from this heatmap.
+    GNN_MODELS = {m for m in metrics_df["model"].unique() if m.startswith("gnn")}
     all_models  = _model_order(metrics_df["model"].unique())
     main_models = [m for m in all_models if m not in GNN_MODELS]
-    gnn_models  = [m for m in all_models if m in GNN_MODELS]
 
     pivot_main = (metrics_df[~metrics_df["model"].isin(GNN_MODELS)]
                   .pivot(index="feature_set", columns="model", values="auroc")
                   .reindex(index=feature_sets, columns=main_models))
 
-    pivot_gnn  = (metrics_df[metrics_df["model"].isin(GNN_MODELS)]
-                  .pivot(index="feature_set", columns="model", values="auroc")
-                  .reindex(index=feature_sets, columns=gnn_models))
+    # Drop rows that are entirely NaN (e.g. GNN-only feature sets)
+    valid_rows = pivot_main.index[~pivot_main.isnull().all(axis=1)]
+    pivot_main = pivot_main.loc[valid_rows]
+    feature_sets = list(valid_rows)
 
-    has_gnn = gnn_models and not pivot_gnn.isnull().all().all()
-
-    # Shared vmin/vmax across both panels for a consistent colour scale
-    all_finite = metrics_df["auroc"].dropna().values
-    vmin = max(0.5, all_finite.min() - 0.02) if len(all_finite) else 0.5
-    vmax = min(1.0, all_finite.max() + 0.02) if len(all_finite) else 1.0
-
-    if has_gnn:
-        # Two-panel figure: main models left, GNN right (narrower)
-        gnn_width_ratio = max(1, len(gnn_models)) / max(1, len(main_models))
-        fig, (ax_main, ax_gnn) = plt.subplots(
-            1, 2,
-            figsize=(
-                max(5, len(main_models) * 1.1) + max(2, len(gnn_models) * 1.4),
-                max(3, len(feature_sets) * 0.7),
-            ),
-            gridspec_kw={"width_ratios": [len(main_models), max(1, len(gnn_models))]},
-        )
-        im = _draw_heatmap(ax_main, pivot_main, feature_sets, main_models,
-                           "AUROC by feature set and model\n(top-500 pathway subset)",
-                           vmin=vmin, vmax=vmax)
-        _draw_heatmap(ax_gnn, pivot_gnn, feature_sets, gnn_models,
-                      "GNN — full pathway graph\n(not directly comparable)",
-                      vmin=vmin, vmax=vmax)
-        ax_gnn.set_ylabel("")
-        ax_gnn.set_yticklabels([])
-        # Vertical divider to visually separate panels
-        fig.text(0.5, 0.5, "│", ha="center", va="center",
-                 fontsize=20, color="#aaaaaa", transform=fig.transFigure)
-        if im is not None:
-            cbar = fig.colorbar(im, ax=[ax_main, ax_gnn], fraction=0.02, pad=0.02)
-            cbar.set_label("AUROC", fontsize=9)
-            cbar.set_ticks([0.5, 0.6, 0.7, 0.8, 0.9, 1.0])
-        fig.suptitle("AUROC by feature set and model", fontsize=11, fontweight="bold", y=1.01)
+    # Colour scale: tight range around the actual data so differences are visible.
+    # Clamp lower bound at 0.5 (chance level) so red still means "near chance".
+    all_finite = pivot_main.values[~np.isnan(pivot_main.values)]
+    if len(all_finite):
+        data_min, data_max = all_finite.min(), all_finite.max()
+        span = max(data_max - data_min, 0.04)   # at least 4 pp of range
+        vmin = max(0.5, data_min - span * 0.1)
+        vmax = min(1.0, data_max + span * 0.1)
     else:
-        fig, ax = plt.subplots(
-            figsize=(max(5, len(main_models) * 1.1), max(3, len(feature_sets) * 0.7))
-        )
-        im = _draw_heatmap(ax, pivot_main, feature_sets, main_models,
-                           "AUROC by feature set and model", vmin=vmin, vmax=vmax)
-        if im is not None:
-            cbar = plt.colorbar(im, ax=ax, fraction=0.03, pad=0.02)
-            cbar.set_label("AUROC", fontsize=9)
-            cbar.set_ticks([0.5, 0.6, 0.7, 0.8, 0.9, 1.0])
+        vmin, vmax = 0.5, 1.0
+
+    fig, ax = plt.subplots(
+        figsize=(max(6, len(main_models) * 1.3), max(4, len(feature_sets) * 0.55))
+    )
+    im = _draw_heatmap(ax, pivot_main, feature_sets, main_models,
+                       "AUROC by feature set and model", vmin=vmin, vmax=vmax)
+    if im is not None:
+        cbar = plt.colorbar(im, ax=ax, fraction=0.03, pad=0.02)
+        cbar.set_label("AUROC", fontsize=9)
+        # Tick marks every 0.01 in the visible range
+        tick_step = 0.01
+        ticks = np.arange(np.ceil(vmin / tick_step) * tick_step,
+                          vmax + tick_step / 2, tick_step)
+        cbar.set_ticks(np.round(ticks, 3))
 
     _save(fig, out_path)
 
@@ -347,26 +379,38 @@ def plot_cross_tissue_heatmap(ranking_df, model, top_n, out_path):
     if len(top) == 0:
         return
 
-    fig, ax = plt.subplots(figsize=(max(4, len(top.columns) * 1.2), max(5, len(top) * 0.32)))
+    n_tissues = len(top.columns)
+    n_pathways = len(top)
+    # Wide enough for labels: left margin + heatmap columns + colorbar
+    fig, ax = plt.subplots(figsize=(max(7, n_tissues * 1.8 + 4), max(6, n_pathways * 0.55)))
     im = ax.imshow(top.values, aspect="auto", cmap="YlOrRd", vmin=0, vmax=100)
 
-    for i in range(len(top)):
-        for j in range(len(top.columns)):
+    for i in range(n_pathways):
+        for j in range(n_tissues):
             v = top.values[i, j]
             if not np.isnan(v):
                 color = "white" if v > 70 else "black"
-                ax.text(j, i, f"{v:.0f}", ha="center", va="center", fontsize=6.5, color=color)
+                ax.text(j, i, f"{v:.0f}", ha="center", va="center", fontsize=7, color=color)
 
-    ax.set_xticks(range(len(top.columns)))
-    ax.set_xticklabels(top.columns, fontsize=8)
-    ax.set_yticks(range(len(top)))
-    ax.set_yticklabels([f.replace("_", " ") for f in top.index], fontsize=7)
-    plt.colorbar(im, ax=ax, fraction=0.03, pad=0.03, label="Percentile rank")
+    ax.set_xticks(range(n_tissues))
+    ax.set_xticklabels(top.columns, fontsize=9)
+    ax.set_yticks(range(n_pathways))
+
+    import textwrap
+
+    def _wrap(name, width=45):
+        return "\n".join(textwrap.wrap(name.replace("_", " "), width=width))
+
+    ax.set_yticklabels([_wrap(f) for f in top.index], fontsize=7)
+    plt.colorbar(im, ax=ax, fraction=0.02, pad=0.02, label="Percentile rank")
     ax.set_title(
         f"{model.replace('_', ' ')} — pathway ranks across GREx tissues\n(top {top_n} by mean rank)",
         fontsize=10, fontweight="bold",
     )
-    _save(fig, out_path)
+    fig.tight_layout(rect=[0.0, 0.0, 1.0, 1.0])
+    fig.savefig(out_path, bbox_inches="tight", dpi=150)
+    plt.close(fig)
+    print(f"  Saved: {out_path}")
 
 
 # ── 5. Delta AUROC vs baseline ───────────────────────────────────────────────
@@ -537,8 +581,11 @@ def main():
     if os.path.isfile(sparsity_path):
         sparsity_df = pd.read_csv(sparsity_path)
 
+    # Normalize GNN rows: strip graph method suffix from feature_set, encode in model
+    metrics_df = _normalize_gnn_rows(metrics_df)
+
     # Determine feature sets and models to plot
-    feature_sets = args.feature_sets or sorted(metrics_df["feature_set"].unique())
+    feature_sets = args.feature_sets or _ordered_feature_sets(metrics_df["feature_set"].unique())
     models       = _model_order(metrics_df["model"].unique())
 
     print(f"Feature sets : {feature_sets}")
