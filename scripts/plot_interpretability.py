@@ -243,10 +243,7 @@ def plot_auroc_heatmap(metrics_df, feature_sets, out_path):
         cbar = plt.colorbar(im, ax=ax, fraction=0.03, pad=0.02)
         cbar.set_label("AUROC", fontsize=9)
         # Tick marks every 0.01 in the visible range
-        tick_step = 0.01
-        ticks = np.arange(np.ceil(vmin / tick_step) * tick_step,
-                          vmax + tick_step / 2, tick_step)
-        ticks = np.round(ticks[ticks <= vmax + 1e-9], 3)
+        ticks = np.round(np.linspace(vmin, vmax, 6), 3)
         cbar.set_ticks(ticks)
 
     _save(fig, out_path)
