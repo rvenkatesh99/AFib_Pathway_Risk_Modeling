@@ -277,6 +277,50 @@ def main():
         delong_df.to_csv(delong_path, index=False, float_format="%.4f")
         print(f"Wrote {delong_path}")
 
+    # ── DeLong cross-feature-set: same model, same labels, different features ──
+    # Valid only when all feature sets share the same test-set labels (same splits).
+    # Compares every (fs1, model) vs (fs2, model) pair for a fixed model.
+    # Skips pairs where labels differ (different splits or test sets).
+    cross_delong_rows = []
+    all_models_seen = sorted({m for _, m, _ in runs})
+    all_fs_seen     = sorted({fs for fs, _, _ in runs})
+
+    for model in all_models_seen:
+        # Collect (fs, probs, labels) for this model across all feature sets
+        model_entries = [
+            (fs, all_probs[(fs, model)], all_labels.get(fs))
+            for fs in all_fs_seen
+            if (fs, model) in all_probs and all_labels.get(fs) is not None
+        ]
+        for i, (fs1, probs1, labels1) in enumerate(model_entries):
+            for fs2, probs2, labels2 in model_entries[i + 1:]:
+                if not np.array_equal(labels1, labels2):
+                    continue  # different test sets — DeLong invalid
+                res = pairwise_delong({fs1: probs1, fs2: probs2}, labels1)
+                for (m1, m2), r in res.items():
+                    cross_delong_rows.append({
+                        "model":        model,
+                        "feature_set_1": m1,
+                        "feature_set_2": m2,
+                        "z_stat":       r["z_stat"],
+                        "p_value":      r["p_value"],
+                    })
+
+    if cross_delong_rows:
+        cross_df = pd.DataFrame(cross_delong_rows).sort_values(["model", "p_value"])
+        cross_path = os.path.join(out_dir, "delong_cross_featureset.csv")
+        cross_df.to_csv(cross_path, index=False, float_format="%.4f")
+        print(f"\nCross-feature-set DeLong (same model, different feature sets):")
+        # Print only comparisons involving the best feature sets for brevity
+        key_fs = {"gwas_prs", "gwas_grex_HAA_HLV_prs", "gwas_grex_HAA_HLV_AA_prs",
+                  "prs_covs", "covs_only"}
+        summary = cross_df[
+            cross_df["feature_set_1"].isin(key_fs) & cross_df["feature_set_2"].isin(key_fs)
+        ]
+        if len(summary):
+            print(summary.to_string(index=False))
+        print(f"Wrote {cross_path}")
+
     # ── NRI / IDI / Calibration vs covs_only baseline ────────────────────────
     ref_probs = all_probs.get(("covs_only", "l1_logistic"))
     ref_labels = all_labels.get("covs_only")
