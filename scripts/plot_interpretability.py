@@ -249,6 +249,78 @@ def plot_auroc_heatmap(metrics_df, feature_sets, out_path):
     _save(fig, out_path)
 
 
+def plot_gnn_table(metrics_df, topology_df, out_path):
+    """
+    Side-by-side summary for GNN models:
+      Left : AUROC (feature_set × graph_method heatmap)
+      Right: Graph topology (n_edges per feature_set × graph_method)
+
+    metrics_df  — from gnn_metrics_summary.csv (feature_set, graph_method, auroc, …)
+    topology_df — from gnn_graph_topology.csv  (feature_set, graph_method, n_edges, …)
+                  Pass None to skip the topology panel.
+    """
+    GNN_METHOD_ORDER = ["jaccard", "score_correlation", "string", "fully_connected"]
+
+    gnn_methods = [m for m in GNN_METHOD_ORDER if m in metrics_df["graph_method"].unique()]
+    feature_sets = sorted(metrics_df["feature_set"].unique())
+
+    pivot_auroc = (metrics_df
+                   .pivot(index="feature_set", columns="graph_method", values="auroc")
+                   .reindex(index=feature_sets, columns=gnn_methods))
+
+    has_topo = topology_df is not None and len(topology_df) > 0
+    ncols = 2 if has_topo else 1
+    fig, axes = plt.subplots(
+        1, ncols,
+        figsize=(max(5, len(gnn_methods) * 1.8 + 2) * ncols,
+                 max(4, len(feature_sets) * 0.55)),
+    )
+    if ncols == 1:
+        axes = [axes]
+
+    # ── AUROC heatmap ──────────────────────────────────────────────────────
+    all_finite = pivot_auroc.values[~np.isnan(pivot_auroc.values)]
+    if len(all_finite):
+        data_min, data_max = all_finite.min(), all_finite.max()
+        span = max(data_max - data_min, 0.04)
+        vmin = max(0.5, data_min - span * 0.1)
+        vmax = min(1.0, data_max + span * 0.1)
+    else:
+        vmin, vmax = 0.5, 1.0
+
+    im = _draw_heatmap(axes[0], pivot_auroc, feature_sets, gnn_methods,
+                       "GNN AUROC (feature set × graph method)", vmin=vmin, vmax=vmax)
+    if im is not None:
+        cbar = plt.colorbar(im, ax=axes[0], fraction=0.03, pad=0.02)
+        cbar.set_label("AUROC", fontsize=9)
+        cbar.set_ticks(np.round(np.linspace(vmin, vmax, 6), 3))
+
+    # ── Topology heatmap ───────────────────────────────────────────────────
+    if has_topo:
+        pivot_edges = (topology_df
+                       .pivot(index="feature_set", columns="graph_method", values="n_edges")
+                       .reindex(index=feature_sets, columns=gnn_methods))
+        ax2 = axes[1]
+        vals = pivot_edges.values.astype(float)
+        vmax_e = np.nanmax(vals) if not np.all(np.isnan(vals)) else 1
+        im2 = ax2.imshow(vals, aspect="auto", cmap="Blues", vmin=0, vmax=vmax_e)
+        ax2.set_xticks(range(len(gnn_methods)))
+        ax2.set_xticklabels([m.replace("_", "\n") for m in gnn_methods], fontsize=8)
+        ax2.set_yticks(range(len(feature_sets)))
+        ax2.set_yticklabels([fs.replace("_", " ") for fs in feature_sets], fontsize=8)
+        ax2.set_title("GNN graph edges (n_edges)", fontsize=10, fontweight="bold")
+        for i in range(len(feature_sets)):
+            for j in range(len(gnn_methods)):
+                v = vals[i, j]
+                if not np.isnan(v):
+                    ax2.text(j, i, f"{int(v):,}", ha="center", va="center",
+                             fontsize=7, color="white" if v > vmax_e * 0.6 else "black")
+        plt.colorbar(im2, ax=ax2, fraction=0.03, pad=0.02, label="n_edges")
+
+    plt.tight_layout()
+    _save(fig, out_path)
+
+
 def plot_auroc_dotplot(metrics_df, feature_sets, out_path):
     """
     Forest-plot style dot plot: one row per feature set, one dot per model,
@@ -569,6 +641,12 @@ def main():
 
     metrics_df = pd.read_csv(metrics_path)
 
+    # GNN-specific summaries (written by aggregate_gnn_results.py)
+    gnn_metrics_path  = os.path.join(args.agg_dir, "gnn_metrics_summary.csv")
+    gnn_topology_path = os.path.join(args.agg_dir, "gnn_graph_topology.csv")
+    gnn_metrics_df  = pd.read_csv(gnn_metrics_path)  if os.path.isfile(gnn_metrics_path)  else None
+    gnn_topology_df = pd.read_csv(gnn_topology_path) if os.path.isfile(gnn_topology_path) else None
+
     ranking_df = None
     if os.path.isfile(rank_path):
         ranking_df = pd.read_csv(rank_path, index_col=0, header=[0, 1])
@@ -597,6 +675,14 @@ def main():
         metrics_df, feature_sets,
         os.path.join(args.out_dir, "01_auroc_comparison.pdf"),
     )
+
+    # ── 1b. GNN summary table ─────────────────────────────────────────────────
+    if gnn_metrics_df is not None:
+        print("Plotting GNN summary table...")
+        plot_gnn_table(
+            gnn_metrics_df, gnn_topology_df,
+            os.path.join(args.out_dir, "01b_gnn_summary.pdf"),
+        )
 
     # ── 2. AUROC heatmap ──────────────────────────────────────────────────────
     print("Plotting AUROC heatmap...")
