@@ -829,10 +829,6 @@ def plot_prc_curves(all_probs, all_labels, feature_sets, models, out_path):
 
 def plot_calibration_diagram(all_probs, all_labels, feature_sets, models, out_path,
                              n_bins=10):
-    """
-    Reliability diagram: mean predicted probability vs observed event rate per decile.
-    Perfect calibration = diagonal. One subplot per feature set.
-    """
     fs_with_data = [fs for fs in feature_sets
                     if fs in all_labels and any((fs, m) in all_probs for m in models)]
     if not fs_with_data:
@@ -842,46 +838,61 @@ def plot_calibration_diagram(all_probs, all_labels, feature_sets, models, out_pa
     ncols = min(3, len(fs_with_data))
     nrows = int(np.ceil(len(fs_with_data) / ncols))
     fig, axes = plt.subplots(nrows, ncols,
-                             figsize=(ncols * 3.0, nrows * 3.0),
+                             figsize=(ncols * 3.0, nrows * 3.0 + 0.5),
                              squeeze=False)
 
     for ax in axes.flat:
         ax.set_visible(False)
 
-    bins = np.linspace(0, 1, n_bins + 1)
-    bin_centers = (bins[:-1] + bins[1:]) / 2
+    legend_handles, legend_labels = [], []
 
     for idx, fs in enumerate(fs_with_data):
         ax = axes[idx // ncols][idx % ncols]
         ax.set_visible(True)
         labels = all_labels[fs]
 
+        # Quantile-based bins: equal number of samples per bin, avoiding sparse high-prob bins
+        all_fs_probs = np.concatenate([all_probs[(fs, m)] for m in models
+                                       if (fs, m) in all_probs])
+        quantiles = np.percentile(all_fs_probs, np.linspace(0, 100, n_bins + 1))
+        quantiles = np.unique(quantiles)  # drop duplicates at edges
+        x_max = np.percentile(all_fs_probs, 98)
+
         for model in models:
             if (fs, model) not in all_probs:
                 continue
             probs = all_probs[(fs, model)]
-            obs_rates = []
-            pred_means = []
-            for lo, hi in zip(bins[:-1], bins[1:]):
+            obs_rates, pred_means = [], []
+            for lo, hi in zip(quantiles[:-1], quantiles[1:]):
                 mask = (probs >= lo) & (probs < hi)
-                if mask.sum() == 0:
+                if mask.sum() < 5:
                     continue
                 obs_rates.append(labels[mask].mean())
                 pred_means.append(probs[mask].mean())
             if not pred_means:
                 continue
-            ax.plot(pred_means, obs_rates, "o-",
-                    color=MODEL_COLORS.get(model, "#aaaaaa"),
-                    markersize=3, linewidth=1.0,
-                    label=model.replace("_", " "))
+            line, = ax.plot(pred_means, obs_rates, "o-",
+                            color=MODEL_COLORS.get(model, "#aaaaaa"),
+                            markersize=3, linewidth=1.0)
+            label = model.replace("_", " ")
+            if label not in legend_labels:
+                legend_handles.append(line)
+                legend_labels.append(label)
 
-        ax.plot([0, 1], [0, 1], "--", color="#aaaaaa", linewidth=0.7, label="perfect")
-        ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+        ax.plot([0, x_max], [0, x_max], "--", color="#aaaaaa", linewidth=0.7)
+        ax.set_xlim(0, x_max)
+        ax.set_ylim(0, min(1.0, x_max * 3))
         ax.set_xlabel("Mean predicted probability")
         ax.set_ylabel("Observed event rate")
         ax.set_title(fs.replace("_covs", "").replace("_", " "))
-        ax.legend(fontsize=6, frameon=False, loc="upper left")
-        ax.set_aspect("equal")
+
+    # One shared legend below the grid
+    fig.legend(legend_handles, legend_labels,
+               loc="lower center", ncol=len(legend_labels),
+               fontsize=7, frameon=False,
+               bbox_to_anchor=(0.5, 0.0))
+    fig.text(0.5, -0.02, "Quantile bins (equal sample count per bin)",
+             ha="center", fontsize=6, color="#888888")
 
     _save(fig, out_path)
 

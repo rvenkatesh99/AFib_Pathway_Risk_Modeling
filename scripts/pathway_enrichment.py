@@ -85,7 +85,8 @@ def _gene_count(gene_str):
 def _size_scale(series, size_min=30, size_max=200):
     rng = series.max() - series.min()
     if rng == 0:
-        return pd.Series([size_min + (size_max - size_min) / 2] * len(series))
+        return pd.Series([size_min + (size_max - size_min) / 2] * len(series),
+                         index=series.index)
     return size_min + (series - series.min()) / rng * (size_max - size_min)
 
 
@@ -121,17 +122,31 @@ def load_ranking(results_dir, model):
         return json.load(f)
 
 
-def strip_prefix(name):
-    return name.split("__", 1)[1] if "__" in name else name
+def _base_name(name):
+    """Strip all source/tissue prefixes — last __ segment is the canonical pathway name."""
+    return name.rsplit("__", 1)[-1]
+
+
+def _build_gene_index(gene_sets):
+    """Map base pathway name → genes, ignoring source prefix differences."""
+    index = {}
+    for key, genes in gene_sets.items():
+        index[_base_name(key)] = genes
+    return index
 
 
 def build_gene_scores(ranking, gene_sets, agg="max"):
+    index = _build_gene_index(gene_sets)
     gene_scores = {}
+    n_matched = 0
     for pw_name, score in ranking.items():
-        clean = strip_prefix(pw_name)
-        genes = gene_sets.get(pw_name, gene_sets.get(clean, []))
+        genes = index.get(_base_name(pw_name), [])
+        if genes:
+            n_matched += 1
         for gene in genes:
             gene_scores.setdefault(gene, []).append(score)
+    print(f"  Gene score lookup: {n_matched}/{len(ranking)} pathways matched, "
+          f"{len(gene_scores)} unique genes")
     agg_fn = np.mean if agg == "mean" else np.max
     return pd.Series(
         {g: agg_fn(vals) for g, vals in gene_scores.items()}
@@ -139,10 +154,10 @@ def build_gene_scores(ranking, gene_sets, agg="max"):
 
 
 def selected_genes(ranking, gene_sets, threshold=0.0):
+    index = _build_gene_index(gene_sets)
     selected, all_genes = set(), set()
     for pw_name, score in ranking.items():
-        clean = strip_prefix(pw_name)
-        genes = gene_sets.get(pw_name, gene_sets.get(clean, []))
+        genes = index.get(_base_name(pw_name), [])
         all_genes.update(genes)
         if abs(score) > threshold:
             selected.update(genes)
@@ -175,8 +190,11 @@ def run_ora(sel_genes, bg_genes, gene_sets, out_dir, tag, top_n=20):
 def _plot_ora(enr_df, out_dir, tag, top_n=20):
     sig = enr_df[enr_df["Adjusted P-value"] < 0.05].head(top_n).copy()
     if sig.empty:
-        print("  No significant ORA terms (FDR < 0.05)")
-        return
+        sig = enr_df.sort_values("Adjusted P-value").head(top_n).copy()
+        if sig.empty:
+            print("  No ORA results at all")
+            return
+        print(f"  No FDR < 0.05 terms; showing top {len(sig)} by p-value (uncorrected)")
 
     sig["-log10(FDR)"] = -np.log10(sig["Adjusted P-value"].clip(lower=1e-300))
     sig["gene_count"]  = sig["Genes"].apply(_gene_count)
@@ -184,14 +202,17 @@ def _plot_ora(enr_df, out_dir, tag, top_n=20):
     sig = sig.sort_values("-log10(FDR)")
 
     fig, ax = plt.subplots(figsize=(8, max(4, len(sig) * 0.45)))
-    norm = plt.Normalize(sig["-log10(FDR)"].min(), sig["-log10(FDR)"].max())
+    vmin, vmax = sig["-log10(FDR)"].min(), sig["-log10(FDR)"].max()
+    if vmin >= vmax:
+        vmin = max(0, vmax - 1)
+    norm = plt.Normalize(vmin=vmin, vmax=vmax)
     cmap = plt.cm.RdBu_r
     sizes = _size_scale(sig["gene_count"])
 
     for lib in sig["library"].unique():
         sub = sig[sig["library"] == lib]
         ax.scatter(sub["Combined Score"], sub["term_wrapped"],
-                   c=sub["-log10(FDR)"], s=sizes[sub.index],
+                   c=sub["-log10(FDR)"].values, s=sizes[sub.index].values,
                    cmap=cmap, norm=norm,
                    marker=_LIB_MARKER.get(lib, "o"),
                    alpha=0.85, edgecolors="white", linewidths=0.4, zorder=3)
@@ -231,8 +252,11 @@ def run_preranked_gsea(gene_scores, out_dir, tag, top_n=20):
 def _plot_gsea(gsea_df, out_dir, tag, top_n=20):
     sig = gsea_df[gsea_df["FDR q-val"] < 0.25].head(top_n).copy()
     if sig.empty:
-        print("  No significant GSEA terms (FDR < 0.25)")
-        return
+        sig = gsea_df.sort_values("FDR q-val").head(top_n).copy()
+        if sig.empty:
+            print("  No GSEA results at all")
+            return
+        print(f"  No FDR < 0.25 terms; showing top {len(sig)} by q-value (uncorrected)")
 
     sig["-log10(FDR)"] = -np.log10(sig["FDR q-val"].clip(lower=1e-300))
     gene_col = next((c for c in ["Lead_genes", "matched_genes", "Genes"] if c in sig.columns), None)
@@ -241,14 +265,17 @@ def _plot_gsea(gsea_df, out_dir, tag, top_n=20):
     sig = sig.sort_values("NES")
 
     fig, ax = plt.subplots(figsize=(8, max(4, len(sig) * 0.45)))
-    norm = plt.Normalize(sig["-log10(FDR)"].min(), sig["-log10(FDR)"].max())
+    vmin, vmax = sig["-log10(FDR)"].min(), sig["-log10(FDR)"].max()
+    if vmin >= vmax:
+        vmin = max(0, vmax - 1)
+    norm = plt.Normalize(vmin=vmin, vmax=vmax)
     cmap = plt.cm.RdBu_r
     sizes = _size_scale(sig["gene_count"])
 
     for lib in sig["library"].unique():
         sub = sig[sig["library"] == lib]
         ax.scatter(sub["NES"], sub["term_wrapped"],
-                   c=sub["-log10(FDR)"], s=sizes[sub.index],
+                   c=sub["-log10(FDR)"].values, s=sizes[sub.index].values,
                    cmap=cmap, norm=norm,
                    marker=_LIB_MARKER.get(lib, "o"),
                    alpha=0.85, edgecolors="white", linewidths=0.4, zorder=3)
