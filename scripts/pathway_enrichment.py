@@ -135,22 +135,26 @@ def _build_gene_index(gene_sets):
     return index
 
 
-def build_gene_scores(ranking, gene_sets, agg="max"):
+def top_pathway_genes(ranking, gene_sets, top_k=100):
+    """
+    Genes belonging to the top-K pathways by importance score.
+    Returns (selected_genes, background_genes).
+    Used for ORA: avoids the duplicate-score problem of preranked GSEA
+    when pathway scores are aggregated to gene level.
+    """
     index = _build_gene_index(gene_sets)
-    gene_scores = {}
-    n_matched = 0
+    sorted_pws = sorted(ranking.items(), key=lambda x: -abs(x[1]))
+    all_genes, selected = set(), set()
     for pw_name, score in ranking.items():
         genes = index.get(_base_name(pw_name), [])
-        if genes:
-            n_matched += 1
-        for gene in genes:
-            gene_scores.setdefault(gene, []).append(score)
-    print(f"  Gene score lookup: {n_matched}/{len(ranking)} pathways matched, "
-          f"{len(gene_scores)} unique genes")
-    agg_fn = np.mean if agg == "mean" else np.max
-    return pd.Series(
-        {g: agg_fn(vals) for g, vals in gene_scores.items()}
-    ).sort_values(ascending=False)
+        all_genes.update(genes)
+    for pw_name, score in sorted_pws[:top_k]:
+        genes = index.get(_base_name(pw_name), [])
+        selected.update(genes)
+    n_matched = sum(1 for pw in ranking if index.get(_base_name(pw)))
+    print(f"  Top-{top_k} pathways → {len(selected)} genes "
+          f"(background {len(all_genes)}, {n_matched}/{len(ranking)} pathways matched)")
+    return selected, all_genes
 
 
 def selected_genes(ranking, gene_sets, threshold=0.0):
@@ -164,7 +168,7 @@ def selected_genes(ranking, gene_sets, threshold=0.0):
     return selected, all_genes
 
 
-def run_ora(sel_genes, bg_genes, gene_sets, out_dir, tag, top_n=20):
+def run_ora(sel_genes, bg_genes, out_dir, tag, top_n=20):
     out_dir = Path(out_dir)
     print(f"  Running Enrichr ORA ({len(sel_genes)} genes)...")
 
@@ -188,7 +192,9 @@ def run_ora(sel_genes, bg_genes, gene_sets, out_dir, tag, top_n=20):
 
 
 def _plot_ora(enr_df, out_dir, tag, top_n=20):
-    sig = enr_df[enr_df["Adjusted P-value"] < 0.05].head(top_n).copy()
+    sig = (enr_df[enr_df["Adjusted P-value"] < 0.05]
+           .sort_values("Combined Score", ascending=False)
+           .head(top_n).copy())
     if sig.empty:
         sig = enr_df.sort_values("Adjusted P-value").head(top_n).copy()
         if sig.empty:
@@ -224,68 +230,6 @@ def _plot_ora(enr_df, out_dir, tag, top_n=20):
     _save(fig, str(out_dir / f"ora_plot_{tag}.png"))
 
 
-def run_preranked_gsea(gene_scores, out_dir, tag, top_n=20):
-    out_dir = Path(out_dir)
-    print(f"  Running preranked GSEA ({len(gene_scores)} genes)...")
-
-    results = []
-    for lib in ENRICHR_LIBRARIES:
-        try:
-            pre = gp.prerank(rnk=gene_scores, gene_sets=lib, outdir=None,
-                             permutation_num=1000, seed=42, verbose=False)
-            df = pre.res2d.copy()
-            df["library"] = lib
-            results.append(df)
-        except Exception as e:
-            warnings.warn(f"Preranked GSEA failed for {lib}: {e}")
-
-    if not results:
-        print("  No GSEA results produced.")
-        return pd.DataFrame()
-
-    gsea_df = pd.concat(results, ignore_index=True).sort_values("FDR q-val")
-    gsea_df.to_csv(out_dir / f"gsea_preranked_{tag}.csv", index=False)
-    _plot_gsea(gsea_df, out_dir, tag, top_n)
-    return gsea_df
-
-
-def _plot_gsea(gsea_df, out_dir, tag, top_n=20):
-    sig = gsea_df[gsea_df["FDR q-val"] < 0.25].head(top_n).copy()
-    if sig.empty:
-        sig = gsea_df.sort_values("FDR q-val").head(top_n).copy()
-        if sig.empty:
-            print("  No GSEA results at all")
-            return
-        print(f"  No FDR < 0.25 terms; showing top {len(sig)} by q-value (uncorrected)")
-
-    sig["-log10(FDR)"] = -np.log10(sig["FDR q-val"].clip(lower=1e-300))
-    gene_col = next((c for c in ["Lead_genes", "matched_genes", "Genes"] if c in sig.columns), None)
-    sig["gene_count"]  = sig[gene_col].apply(_gene_count) if gene_col else 1
-    sig["term_wrapped"] = sig["Term"].apply(lambda t: "\n".join(textwrap.wrap(t, 45)))
-    sig = sig.sort_values("NES")
-
-    fig, ax = plt.subplots(figsize=(8, max(4, len(sig) * 0.45)))
-    vmin, vmax = sig["-log10(FDR)"].min(), sig["-log10(FDR)"].max()
-    if vmin >= vmax:
-        vmin = max(0, vmax - 1)
-    norm = plt.Normalize(vmin=vmin, vmax=vmax)
-    cmap = plt.cm.RdBu_r
-    sizes = _size_scale(sig["gene_count"])
-
-    for lib in sig["library"].unique():
-        sub = sig[sig["library"] == lib]
-        ax.scatter(sub["NES"], sub["term_wrapped"],
-                   c=sub["-log10(FDR)"].values, s=sizes[sub.index].values,
-                   cmap=cmap, norm=norm,
-                   marker=_LIB_MARKER.get(lib, "o"),
-                   alpha=0.85, edgecolors="white", linewidths=0.4, zorder=3)
-
-    ax.axvline(0, color="#444444", linewidth=0.8, zorder=2)
-    ax.set_xlabel("Normalized Enrichment Score (NES)")
-    ax.set_title(f"Preranked GSEA — {tag.replace('_', ' ')} (FDR < 0.25)", pad=10)
-    ax.grid(axis="x", color="#eeeeee", linewidth=0.5, zorder=0)
-    _dot_legends(ax, fig, sig["library"].unique(), sig["gene_count"], cmap, norm)
-    _save(fig, str(out_dir / f"gsea_plot_{tag}.png"))
 
 
 def main():
@@ -295,7 +239,8 @@ def main():
     p.add_argument("--gene_sets_json",      required=True)
     p.add_argument("--out_dir",             required=True)
     p.add_argument("--selection_threshold", type=float, default=0.0)
-    p.add_argument("--score_agg",           default="max", choices=["mean", "max"])
+    p.add_argument("--top_k",               type=int, default=100,
+                   help="Top-K pathways to use for ORA (continuous models).")
     p.add_argument("--top_n",               type=int, default=20)
     args = p.parse_args()
 
@@ -317,11 +262,13 @@ def main():
         if not sel_genes:
             print("  No pathways selected — nothing to test.")
             return
-        run_ora(sel_genes, bg_genes, gene_sets, out_dir, tag, args.top_n)
     else:
-        gene_scores = build_gene_scores(ranking, gene_sets, agg=args.score_agg)
-        print(f"  Gene-level scores: {len(gene_scores)} genes (agg={args.score_agg})")
-        run_preranked_gsea(gene_scores, out_dir, tag, args.top_n)
+        sel_genes, bg_genes = top_pathway_genes(ranking, gene_sets, top_k=args.top_k)
+        if not sel_genes:
+            print("  No genes found — check gene_sets_json path and pathway name format.")
+            return
+
+    run_ora(sel_genes, bg_genes, out_dir, tag, args.top_n)
 
 
 if __name__ == "__main__":
