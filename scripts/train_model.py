@@ -48,7 +48,7 @@ from src.models.pathway_gnn import (
 from src.metrics import compute_metrics, bootstrap_metrics
 from src.interpretability import (
     get_attention_pathway_ranking, get_l1_pathway_ranking, get_rf_pathway_ranking,
-    compute_gradcam_pathway_ranking,
+    compute_gradcam_pathway_ranking, compute_gradient_covariate_importance,
 )
 
 # ── Hyperparameter grids (Cartesian product of each list) ────────────────────
@@ -536,7 +536,8 @@ def run_global_attention(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_
         weights = model.get_attention_weights()
         if weights is not None:
             np.save(os.path.join(out_dir, "attention_weights.npy"), weights.detach().cpu().numpy())
-        return ranking, None
+        cov_ranking = compute_gradient_covariate_importance(model, test_loader, cov_cols)
+        return ranking, cov_ranking
 
     run_neural(args, GlobalPathwayAttentionModel, fixed, {},
                pw, cov, labels, pw_names, idx_tr, idx_va, idx_te,
@@ -554,7 +555,8 @@ def run_transformer(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, i
         np.save(os.path.join(out_dir, "mean_attention.npy"), mean_attn.numpy())
         ranking = {name: float(mean_attn[-1, :, 0, i + 1].mean().item())
                    for i, name in enumerate(pw_names)}
-        return ranking, None
+        cov_ranking = compute_gradient_covariate_importance(model, test_loader, cov_cols)
+        return ranking, cov_ranking
 
     run_neural(args, PathwayTransformer, fixed, {},
                pw, cov, labels, pw_names, idx_tr, idx_va, idx_te,

@@ -39,6 +39,53 @@ def get_l1_pathway_ranking(l1_pipeline, pathway_names: list, n_features_per_path
             dict(sorted(cov_dict.items(), key=lambda x: -x[1])))
 
 
+def compute_gradient_covariate_importance(
+    model,
+    test_loader,
+    cov_cols: list,
+    device: str = "cpu",
+) -> dict:
+    """
+    Gradient × input covariate attribution for any differentiable pathway model.
+
+    For each covariate j, importance = mean over test set of |∂logit/∂cov_j × cov_j|.
+    This captures both the model's sensitivity to the covariate and its typical magnitude,
+    giving a non-negative importance score comparable across covariates.
+
+    Returns {covariate_name: importance_score} sorted descending.
+    """
+    import torch
+
+    model = model.to(device)
+    model.eval()
+
+    accum = np.zeros(len(cov_cols), dtype=np.float64)
+    n_samples = 0
+
+    for batch in test_loader:
+        pw  = batch["pathway_features"].to(device)
+        cov = batch["covariates"].to(device).float()
+        cov.requires_grad_(True)
+
+        logits = model(pw, cov)
+        # Scalar output: sum logits so backward gives per-sample gradients summed
+        logits.sum().backward()
+
+        if cov.grad is not None:
+            # gradient × input attribution, averaged over batch
+            attr = (cov.grad * cov).detach().abs().cpu().numpy()  # (batch, C)
+            accum += attr.sum(axis=0)
+            n_samples += attr.shape[0]
+
+        cov.requires_grad_(False)
+
+    if n_samples == 0:
+        return {}
+
+    importance = accum / n_samples
+    return dict(sorted(zip(cov_cols, importance.tolist()), key=lambda x: -x[1]))
+
+
 def spearman_rank_concordance(rankings: dict) -> dict:
     """
     Compute pairwise Spearman rank correlation between pathway rankings.

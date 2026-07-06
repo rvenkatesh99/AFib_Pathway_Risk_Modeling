@@ -648,7 +648,92 @@ def plot_delong_heatmap(delong_df, feature_set, out_path):
     _save(fig, out_path)
 
 
-# ── 8. ROC curves ─────────────────────────────────────────────────────────────
+# ── 8. Covariate importance ───────────────────────────────────────────────────
+
+def plot_covariate_importance(ranking_df, feature_sets, models, out_path):
+    """
+    Horizontal lollipop of covariate importance scores per model.
+    Covariates are rows without a '__' separator in ranking_percentile.csv.
+    One subplot per model; feature sets averaged if multiple are present.
+
+    For L1/elasticnet: scores are absolute coefficients (from ranking.json).
+    For global_attention/transformer: scores are gradient×input attribution
+      (computed by compute_gradient_covariate_importance in train_model.py).
+    """
+    # Covariates are features that survived strip_prefix unchanged — i.e. no '__' in name
+    # In ranking_percentile.csv they appear as plain names (age, sex, prs, etc.)
+    all_features = ranking_df.index.tolist()
+    cov_features = [f for f in all_features
+                    if not any(f == strip for strip in all_features
+                               if strip != f and f in strip)]
+
+    # Heuristic: pathway names tend to be long and contain underscores / gene names.
+    # Covariate names are short clinical variables. Use length < 30 as a coarse filter
+    # if no better signal; also exclude anything that looks like a pathway prefix.
+    cov_features = [f for f in all_features
+                    if len(f) < 35 and "__" not in f
+                    and not f.startswith(("HALLMARK_", "KEGG_", "REACTOME_",
+                                          "GO_", "WP_", "PID_", "BIOCARTA_"))]
+
+    if not cov_features:
+        print("  Skipping covariate importance: no covariate rows identified in ranking_percentile.csv")
+        return
+
+    models_present = _model_order([m for m in models
+                                   if any((fs, m) in ranking_df.columns
+                                          for fs in feature_sets)])
+    if not models_present:
+        return
+
+    # Build (covariate × model) table: mean percentile rank across feature sets
+    data = {}
+    for model in models_present:
+        fs_cols = [(fs, model) for fs in feature_sets if (fs, model) in ranking_df.columns]
+        if not fs_cols:
+            continue
+        sub = ranking_df[fs_cols].loc[cov_features]
+        data[model] = sub.mean(axis=1)
+
+    if not data:
+        return
+
+    cov_df = pd.DataFrame(data).dropna(how="all")
+    cov_df = cov_df.loc[cov_df.mean(axis=1).sort_values(ascending=True).index]
+
+    n_cov = len(cov_df)
+    n_m   = len(cov_df.columns)
+    if n_cov == 0:
+        return
+
+    fig, axes = plt.subplots(1, n_m,
+                             figsize=(n_m * 2.8, max(2.5, n_cov * 0.32 + 0.8)),
+                             sharey=True)
+    if n_m == 1:
+        axes = [axes]
+
+    y = np.arange(n_cov)
+    for ax, model in zip(axes, cov_df.columns):
+        vals = cov_df[model].values
+        color = MODEL_COLORS.get(model, "#aaaaaa")
+        ax.hlines(y, 0, vals, color="#dddddd", linewidth=0.8, zorder=1)
+        ax.plot(vals, y, "o", color=color, markersize=5, zorder=2)
+        ax.axvline(50, color="#aaaaaa", linestyle="--", linewidth=0.6)
+        ax.set_xlim(0, 105)
+        ax.set_xlabel("Percentile rank")
+        ax.set_title(model.replace("_", " "))
+        ax.tick_params(left=False)
+        ax.spines["left"].set_visible(False)
+
+    axes[0].set_yticks(y)
+    axes[0].set_yticklabels(cov_df.index.tolist())
+    axes[0].invert_yaxis()
+    fig.suptitle("Covariate importance by model\n"
+                 "(L1/elasticnet: |coefficient|; attention/transformer: gradient×input)",
+                 y=1.02)
+    _save(fig, out_path)
+
+
+# ── 9. ROC curves ─────────────────────────────────────────────────────────────
 
 def plot_roc_curves(all_probs, all_labels, feature_sets, models, out_path):
     """One subplot per feature set; one ROC curve per model. Diagonal = chance."""
@@ -983,6 +1068,14 @@ def main():
         metrics_df, feature_sets,
         os.path.join(args.out_dir, "02b_auroc_dotplot.pdf"),
     )
+
+    # ── 2c. Covariate importance ──────────────────────────────────────────────
+    if ranking_df is not None:
+        print("Plotting covariate importance...")
+        plot_covariate_importance(
+            ranking_df, feature_sets, models,
+            os.path.join(args.out_dir, "02c_covariate_importance.png"),
+        )
 
     # ── 3. Multi-model dot plot (one per feature set) ─────────────────────────
     if ranking_df is not None:
