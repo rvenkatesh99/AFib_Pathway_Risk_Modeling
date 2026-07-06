@@ -42,12 +42,43 @@ from scipy.stats import fisher_exact
 from statsmodels.stats.multitest import multipletests
 
 plt.rcParams.update({
-    "font.family": "sans-serif",
-    "font.size": 9,
-    "axes.spines.top": False,
+    "font.family":       "sans-serif",
+    "font.sans-serif":   ["Arial", "Helvetica", "DejaVu Sans"],
+    "font.size":         8,
+    "axes.labelsize":    9,
+    "axes.titlesize":    9,
+    "axes.titleweight":  "bold",
+    "xtick.labelsize":   8,
+    "ytick.labelsize":   8,
+    "legend.fontsize":   8,
+    "legend.frameon":    False,
+    "axes.spines.top":   False,
     "axes.spines.right": False,
-    "figure.dpi": 120,
+    "axes.linewidth":    0.7,
+    "axes.grid":         False,
+    "xtick.major.width": 0.7,
+    "ytick.major.width": 0.7,
+    "xtick.direction":   "out",
+    "ytick.direction":   "out",
+    "figure.dpi":        150,
+    "figure.facecolor":  "white",
+    "pdf.fonttype":      42,
+    "ps.fonttype":       42,
+    "svg.fonttype":      "none",
+    "savefig.pad_inches": 0.05,
 })
+
+
+def _save(fig, path):
+    """Save as SVG (vector) and PNG (300 dpi). Extension in path is replaced."""
+    fig.tight_layout()
+    stem = os.path.splitext(path)[0]
+    for ext in (".svg", ".png"):
+        out = stem + ext
+        fig.savefig(out, bbox_inches="tight", dpi=300)
+    plt.close(fig)
+    print(f"  Saved: {stem}.{{svg,png}}")
+
 
 # Enrichr gene set libraries to query
 ENRICHR_LIBRARIES = [
@@ -58,7 +89,7 @@ ENRICHR_LIBRARIES = [
 ]
 
 # Models that produce continuous scores (use preranked GSEA)
-CONTINUOUS_MODELS = {"global_attention", "gnn", "random_forest"}
+CONTINUOUS_MODELS = {"global_attention", "gnn", "random_forest", "transformer"}
 # Models that produce selected/not-selected pathways (use ORA)
 SELECTION_MODELS  = {"l1_logistic", "elasticnet", "unregularized_logistic"}
 
@@ -158,26 +189,22 @@ def _plot_ora(enr_df, out_dir, tag, top_n=20):
     colors = plt.cm.tab10(np.linspace(0, 1, sig["library"].nunique()))
     lib_color = {lib: colors[i] for i, lib in enumerate(sig["library"].unique())}
 
-    bars = ax.barh(
+    ax.barh(
         range(len(sig)),
         sig["-log10(FDR)"],
         color=[lib_color[l] for l in sig["library"]],
-        alpha=0.85, edgecolor="white",
+        edgecolor="none",
     )
-    ax.axvline(-np.log10(0.05), color="grey", linestyle="--", linewidth=0.8)
+    ax.axvline(-np.log10(0.05), color="#888888", linestyle="--", linewidth=0.7)
     ax.set_yticks(range(len(sig)))
-    ax.set_yticklabels(sig["Term"].str[:60], fontsize=7)
-    ax.set_xlabel("-log10(FDR)")
-    ax.set_title(f"ORA — {tag.replace('_', ' ')} (FDR < 0.05)", fontweight="bold")
+    ax.set_yticklabels(sig["Term"].str[:60])
+    ax.set_xlabel("−log₁₀(FDR)")
+    ax.set_title(f"ORA — {tag.replace('_', ' ')} (FDR < 0.05)")
 
     handles = [plt.Rectangle((0, 0), 1, 1, color=c) for c in lib_color.values()]
-    ax.legend(handles, lib_color.keys(), fontsize=7, loc="lower right")
+    ax.legend(handles, lib_color.keys(), loc="lower right")
 
-    fig.tight_layout()
-    path = out_dir / f"ora_plot_{tag}.pdf"
-    fig.savefig(path, bbox_inches="tight")
-    print(f"  ORA plot saved: {path}")
-    plt.close(fig)
+    _save(fig, str(out_dir / f"ora_plot_{tag}.png"))
 
 
 def run_preranked_gsea(gene_scores, out_dir, tag, top_n=20):
@@ -227,24 +254,20 @@ def _plot_gsea(gsea_df, out_dir, tag, top_n=20):
     colors = ["#d01c8b" if nes > 0 else "#4dac26" for nes in sig["NES"]]
 
     fig, ax = plt.subplots(figsize=(7, max(4, len(sig) * 0.35)))
-    ax.barh(range(len(sig)), sig["NES"], color=colors, alpha=0.85, edgecolor="white")
-    ax.axvline(0, color="black", linewidth=0.8)
+    ax.barh(range(len(sig)), sig["NES"], color=colors, edgecolor="none")
+    ax.axvline(0, color="#333333", linewidth=0.8)
     ax.set_yticks(range(len(sig)))
-    ax.set_yticklabels(sig["Term"].str[:60], fontsize=7)
+    ax.set_yticklabels(sig["Term"].str[:60])
     ax.set_xlabel("Normalized Enrichment Score (NES)")
-    ax.set_title(f"Preranked GSEA — {tag.replace('_', ' ')} (FDR < 0.25)", fontweight="bold")
+    ax.set_title(f"Preranked GSEA — {tag.replace('_', ' ')} (FDR < 0.25)")
 
     handles = [
-        plt.Rectangle((0, 0), 1, 1, color="#d01c8b", alpha=0.85),
-        plt.Rectangle((0, 0), 1, 1, color="#4dac26", alpha=0.85),
+        plt.Rectangle((0, 0), 1, 1, color="#d01c8b"),
+        plt.Rectangle((0, 0), 1, 1, color="#4dac26"),
     ]
-    ax.legend(handles, ["Enriched (positive)", "Depleted (negative)"], fontsize=7)
+    ax.legend(handles, ["Enriched", "Depleted"])
 
-    fig.tight_layout()
-    path = out_dir / f"gsea_plot_{tag}.pdf"
-    fig.savefig(path, bbox_inches="tight")
-    print(f"  GSEA plot saved: {path}")
-    plt.close(fig)
+    _save(fig, str(out_dir / f"gsea_plot_{tag}.png"))
 
 
 def main():

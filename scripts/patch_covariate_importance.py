@@ -62,9 +62,10 @@ def parse_args():
                    help="Directory containing data_config.json + splits.npz. "
                         "When using --parent_dir, defaults to {parent_dir}/splits/. "
                         "When using --run_dir, defaults to the parent of run_dir.")
-    p.add_argument("--pathway_cols_file", default=None,
-                   help="Optional .txt file listing pathway column names (one per line). "
-                        "Pass if the run used a subset of pathways.")
+    p.add_argument("--prs_col", default=None,
+                   help="Name of PRS column in the covariates file, if it was appended "
+                        "as an extra covariate during training (e.g. 'prs_score'). "
+                        "Required when the checkpoint C > base covariate count.")
     p.add_argument("--dry_run", action="store_true",
                    help="Print what would be patched without modifying any files.")
     return p.parse_args()
@@ -100,6 +101,20 @@ def covariate_scores_present(ranking_path, cov_cols):
     return any(c in ranking for c in cov_cols)
 
 
+def checkpoint_dims(run_dir, model_name):
+    """Read K and C directly from the saved checkpoint weights to avoid mismatches."""
+    weight_path = os.path.join(run_dir, PATCHABLE_MODELS[model_name][0])
+    state = torch.load(weight_path, map_location="cpu", weights_only=True)
+    if model_name == "global_attention":
+        K = state["attention_logits"].shape[0]
+        C = state["covariate_encoder.0.weight"].shape[1]
+    elif model_name == "transformer":
+        # pathway_id_embed: (n_pathways, embed_dim)
+        K = state["pathway_id_embed.weight"].shape[0]
+        C = state["covariate_encoder.0.weight"].shape[1]
+    return int(K), int(C)
+
+
 def load_model(model_name, run_dir, hparams, n_pathways, pathway_input_dim, covariate_dim):
     if model_name == "global_attention":
         from src.models.global_attention import GlobalPathwayAttentionModel
@@ -112,7 +127,7 @@ def load_model(model_name, run_dir, hparams, n_pathways, pathway_input_dim, cova
                if k not in ("lr", "weight_decay", "n_epochs", "patience")},
         )
     elif model_name == "transformer":
-        from src.models.global_attention import PathwayTransformer
+        from src.models.pathway_transformer import PathwayTransformer
         extra = FIXED_EXTRA.get(model_name, {})
         model = PathwayTransformer(
             n_pathways=n_pathways,
@@ -125,35 +140,73 @@ def load_model(model_name, run_dir, hparams, n_pathways, pathway_input_dim, cova
         raise ValueError(f"Unknown patchable model: {model_name}")
 
     weight_path = os.path.join(run_dir, PATCHABLE_MODELS[model_name][0])
-    state = torch.load(weight_path, map_location="cpu")
+    state = torch.load(weight_path, map_location="cpu", weights_only=True)
     model.load_state_dict(state)
     model.eval()
     return model
 
 
-def patch_run(run_dir, splits_dir, model_name, pathway_cols_file=None, dry_run=False):
+def patch_run(run_dir, splits_dir, model_name, prs_col=None, dry_run=False):
     ranking_path = os.path.join(run_dir, "ranking.json")
     hparams_path = os.path.join(run_dir, "best_hparams.json")
 
     with open(hparams_path) as f:
         hparams = json.load(f)
 
-    # Load pathway column list if provided
-    pathway_cols = None
-    if pathway_cols_file and os.path.isfile(pathway_cols_file):
-        with open(pathway_cols_file) as f:
-            pathway_cols = [l.strip() for l in f if l.strip()]
+    # Read actual K and C from checkpoint so we don't rely on guessing from data loading
+    try:
+        K_ckpt, C_ckpt = checkpoint_dims(run_dir, model_name)
+    except Exception as e:
+        print(f"  ERROR reading checkpoint dims: {e}")
+        return
 
-    # Reconstruct data exactly as during training
+    # Pathway names: use ranking.json keys — these are exactly the K pathways trained on
+    with open(ranking_path) as f:
+        existing_ranking = json.load(f)
+    pathway_cols = [k for k in existing_ranking
+                    if "__" in k or not any(c.isspace() for c in k)]
+    # Separate true pathway keys (have __ prefix) from any covariate keys already present
+    pathway_cols = [k for k in existing_ranking.keys() if "__" in k]
+    if not pathway_cols:
+        # Fallback: all keys are pathway names (no prefix convention used)
+        pathway_cols = list(existing_ranking.keys())
+
+    # Check if already patched (covariate keys present = no __ in key)
+    cov_keys_present = [k for k in existing_ranking if "__" not in k]
+    if cov_keys_present:
+        print(f"  SKIP (already has {len(cov_keys_present)} covariate scores): {run_dir}")
+        return
+
+    # Load data with the exact pathway subset the model was trained on
     pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te = load_splits(
         splits_dir, pathway_cols=pathway_cols
     )
-    pw_s, cov_s = _scale_splits(pw, cov, idx_tr, idx_va, idx_te)
 
-    # Check if already patched
-    if covariate_scores_present(ranking_path, cov_cols):
-        print(f"  SKIP (already has covariate scores): {run_dir}")
+    # Append PRS as extra covariate if checkpoint C > base covariate count
+    if C_ckpt == cov.shape[1] + 1:
+        if prs_col is None:
+            print(f"  ERROR: checkpoint C={C_ckpt} but data C={cov.shape[1]}. "
+                  f"Pass --prs_col <column_name> to append PRS.")
+            return
+        # Load PRS column from the covariates file
+        import pandas as pd
+        config_path = os.path.join(splits_dir, "data_config.json")
+        with open(config_path) as f:
+            cfg = json.load(f)
+        prs_df = pd.read_csv(cfg["covariates"])
+        if prs_col not in prs_df.columns:
+            print(f"  ERROR: --prs_col '{prs_col}' not found in {cfg['covariates']}")
+            return
+        prs_vals = prs_df[prs_col].values.astype(np.float32).reshape(-1, 1)
+        cov = np.hstack([cov, prs_vals])
+        cov_cols = list(cov_cols) + [prs_col]
+        print(f"  Appended PRS column '{prs_col}' (C now {cov.shape[1]})")
+    elif C_ckpt != cov.shape[1]:
+        print(f"  ERROR: checkpoint C={C_ckpt} but data C={cov.shape[1]} "
+              f"(difference > 1 — cannot auto-resolve). Skipping.")
         return
+
+    pw_s, cov_s = _scale_splits(pw, cov, idx_tr, idx_va, idx_te)
 
     K = pw_s.shape[1] if pw_s.ndim >= 2 else 0
     T = pw_s.shape[2] if pw_s.ndim == 3 else (1 if K > 0 else 0)
@@ -166,7 +219,6 @@ def patch_run(run_dir, splits_dir, model_name, pathway_cols_file=None, dry_run=F
         print(f"  [dry-run] Would patch: {ranking_path}")
         return
 
-    # Build test loader (same batch size as training doesn't matter for attribution)
     _, _, test_loader = make_loaders(
         pw_s[idx_tr], cov_s[idx_tr], labels[idx_tr],
         pw_s[idx_va], cov_s[idx_va], labels[idx_va],
@@ -174,26 +226,22 @@ def patch_run(run_dir, splits_dir, model_name, pathway_cols_file=None, dry_run=F
         batch_size=256,
     )
 
-    # Load model from checkpoint
     try:
         model = load_model(model_name, run_dir, hparams, K, T, C)
     except Exception as e:
         print(f"  ERROR loading model from {run_dir}: {e}")
         return
 
-    # Compute gradient × input covariate attribution
     cov_ranking = compute_gradient_covariate_importance(model, test_loader, cov_cols)
     if not cov_ranking:
         print(f"  WARNING: empty covariate ranking for {run_dir}")
         return
 
-    # Backup + patch ranking.json
+    # Backup + patch
     shutil.copy2(ranking_path, ranking_path + ".bak")
-    with open(ranking_path) as f:
-        existing = json.load(f)
-    existing.update(cov_ranking)
+    existing_ranking.update(cov_ranking)
     with open(ranking_path, "w") as f:
-        json.dump(existing, f, indent=2, cls=_NumpyEncoder)
+        json.dump(existing_ranking, f, indent=2, cls=_NumpyEncoder)
 
     top3 = list(cov_ranking.items())[:3]
     print(f"  Patched. Top covariates: "
@@ -226,7 +274,7 @@ def main():
         print(f"\n[{model_name}] {run_dir}")
         try:
             patch_run(run_dir, splits_dir, model_name,
-                      pathway_cols_file=args.pathway_cols_file,
+                      prs_col=args.prs_col,
                       dry_run=args.dry_run)
         except Exception as e:
             print(f"  ERROR: {e}")
