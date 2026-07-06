@@ -63,9 +63,10 @@ def parse_args():
                         "When using --parent_dir, defaults to {parent_dir}/splits/. "
                         "When using --run_dir, defaults to the parent of run_dir.")
     p.add_argument("--prs_col", default=None,
-                   help="Name of PRS column in the covariates file, if it was appended "
-                        "as an extra covariate during training (e.g. 'prs_score'). "
-                        "Required when the checkpoint C > base covariate count.")
+                   help="Name of PRS column appended as an extra covariate during training.")
+    p.add_argument("--prs_file", default=None,
+                   help="CSV/parquet file containing --prs_col. Required when PRS_std "
+                        "is in a separate file from the main covariates.csv.")
     p.add_argument("--dry_run", action="store_true",
                    help="Print what would be patched without modifying any files.")
     return p.parse_args()
@@ -105,13 +106,13 @@ def checkpoint_dims(run_dir, model_name):
     """Read K and C directly from the saved checkpoint weights to avoid mismatches."""
     weight_path = os.path.join(run_dir, PATCHABLE_MODELS[model_name][0])
     state = torch.load(weight_path, map_location="cpu", weights_only=True)
+    C = state["covariate_encoder.0.weight"].shape[1]
     if model_name == "global_attention":
-        K = state["attention_logits"].shape[0]
-        C = state["covariate_encoder.0.weight"].shape[1]
+        # attention_logits absent when K=0 (covariates-only run)
+        K = state["attention_logits"].shape[0] if "attention_logits" in state else 0
     elif model_name == "transformer":
-        # pathway_id_embed: (n_pathways, embed_dim)
-        K = state["pathway_id_embed.weight"].shape[0]
-        C = state["covariate_encoder.0.weight"].shape[1]
+        # pathway_id_embed absent when K=0
+        K = state["pathway_id_embed.weight"].shape[0] if "pathway_id_embed.weight" in state else 0
     return int(K), int(C)
 
 
@@ -146,7 +147,7 @@ def load_model(model_name, run_dir, hparams, n_pathways, pathway_input_dim, cova
     return model
 
 
-def patch_run(run_dir, splits_dir, model_name, prs_col=None, dry_run=False):
+def patch_run(run_dir, splits_dir, model_name, prs_col=None, prs_file=None, dry_run=False):
     ranking_path = os.path.join(run_dir, "ranking.json")
     hparams_path = os.path.join(run_dir, "best_hparams.json")
 
@@ -186,21 +187,27 @@ def patch_run(run_dir, splits_dir, model_name, prs_col=None, dry_run=False):
     if C_ckpt == cov.shape[1] + 1:
         if prs_col is None:
             print(f"  ERROR: checkpoint C={C_ckpt} but data C={cov.shape[1]}. "
-                  f"Pass --prs_col <column_name> to append PRS.")
+                  f"Pass --prs_col and --prs_file to append PRS.")
             return
-        # Load PRS column from the covariates file
         import pandas as pd
-        config_path = os.path.join(splits_dir, "data_config.json")
-        with open(config_path) as f:
-            cfg = json.load(f)
-        prs_df = pd.read_csv(cfg["covariates"])
+        # Use --prs_file if given; otherwise fall back to the default covariates file
+        if prs_file:
+            src_path = prs_file
+        else:
+            config_path = os.path.join(splits_dir, "data_config.json")
+            with open(config_path) as f:
+                cfg = json.load(f)
+            src_path = cfg["covariates"]
+        prs_df = (pd.read_csv(src_path) if src_path.endswith(".csv")
+                  else pd.read_parquet(src_path))
         if prs_col not in prs_df.columns:
-            print(f"  ERROR: --prs_col '{prs_col}' not found in {cfg['covariates']}")
+            print(f"  ERROR: --prs_col '{prs_col}' not found in {src_path}. "
+                  f"Available: {list(prs_df.columns)}")
             return
         prs_vals = prs_df[prs_col].values.astype(np.float32).reshape(-1, 1)
         cov = np.hstack([cov, prs_vals])
         cov_cols = list(cov_cols) + [prs_col]
-        print(f"  Appended PRS column '{prs_col}' (C now {cov.shape[1]})")
+        print(f"  Appended '{prs_col}' from {src_path} (C now {cov.shape[1]})")
     elif C_ckpt != cov.shape[1]:
         print(f"  ERROR: checkpoint C={C_ckpt} but data C={cov.shape[1]} "
               f"(difference > 1 — cannot auto-resolve). Skipping.")
@@ -275,6 +282,7 @@ def main():
         try:
             patch_run(run_dir, splits_dir, model_name,
                       prs_col=args.prs_col,
+                      prs_file=args.prs_file,
                       dry_run=args.dry_run)
         except Exception as e:
             print(f"  ERROR: {e}")
