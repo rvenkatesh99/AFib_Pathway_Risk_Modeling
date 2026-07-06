@@ -408,6 +408,17 @@ def main():
                     f.write(f"  {rank:2d}. {strip_prefix(name):<50} {score:5.1f}\n")
         print(f"Wrote {top_path}")
 
+    # ── Save probs / labels for downstream plots ──────────────────────────────
+    # plot_interpretability.py loads these to draw ROC, PRC, and calibration curves.
+    probs_dir = os.path.join(out_dir, "probs")
+    os.makedirs(probs_dir, exist_ok=True)
+    for (fs, model), probs in all_probs.items():
+        safe = f"{fs}__{model}".replace("/", "_")
+        np.save(os.path.join(probs_dir, f"{safe}.npy"), probs)
+    for fs, labels in all_labels.items():
+        np.save(os.path.join(probs_dir, f"labels__{fs}.npy"), labels)
+    print(f"\nWrote probs/labels ({len(all_probs)} runs) to {probs_dir}/")
+
     print("\nDone.")
 
 
