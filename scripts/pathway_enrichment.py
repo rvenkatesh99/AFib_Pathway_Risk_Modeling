@@ -192,15 +192,25 @@ def run_ora(sel_genes, bg_genes, out_dir, tag, top_n=20):
 
 
 def _plot_ora(enr_df, out_dir, tag, top_n=20):
-    sig = (enr_df[enr_df["Adjusted P-value"] < 0.05]
-           .sort_values("Combined Score", ascending=False)
-           .head(top_n).copy())
+    per_lib = top_n // len(ENRICHR_LIBRARIES)
+    per_lib = max(per_lib, 2)
+
+    sig_parts = []
+    for lib in ENRICHR_LIBRARIES:
+        sub = enr_df[(enr_df["library"] == lib) & (enr_df["Adjusted P-value"] < 0.05)]
+        sub = sub.sort_values("Combined Score", ascending=False).head(per_lib)
+        sig_parts.append(sub)
+    sig = pd.concat(sig_parts, ignore_index=True).copy()
+
     if sig.empty:
         sig = enr_df.sort_values("Adjusted P-value").head(top_n).copy()
         if sig.empty:
             print("  No ORA results at all")
             return
         print(f"  No FDR < 0.05 terms; showing top {len(sig)} by p-value (uncorrected)")
+    else:
+        n_libs = sig["library"].nunique()
+        print(f"  Plotting {len(sig)} terms across {n_libs} databases")
 
     sig["-log10(FDR)"] = -np.log10(sig["Adjusted P-value"].clip(lower=1e-300))
     sig["gene_count"]  = sig["Genes"].apply(_gene_count)
