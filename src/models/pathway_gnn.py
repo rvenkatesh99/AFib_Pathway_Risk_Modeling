@@ -374,27 +374,44 @@ def build_score_correlation_edge_index(
     pw_train: "np.ndarray",
     pathway_names: list,
     threshold: float = 0.3,
+    top_k: int = None,
 ) -> torch.Tensor:
     """
     Build edge_index from pairwise Pearson correlation of pathway scores
-    across training individuals.  Computed on the training set only to
-    avoid leakage.
+    across training individuals. Computed on training set only to avoid leakage.
 
-    Two pathways are connected if |correlation| >= threshold.
+    If top_k is set, constructs a K-NN graph: each node keeps edges to its
+    top_k most correlated neighbors (by |r|), symmetrized. This bounds edge
+    count at O(top_k * K) regardless of feature set size, making per-epoch
+    GNN cost predictable across feature sets. The threshold is ignored when
+    top_k is set.
 
-    pw_train: (N_train, K) or (N_train, K, T) array of pathway scores
-    pathway_names: ordered list of K pathway names
-    threshold: absolute correlation cutoff for an edge
+    If top_k is None, falls back to threshold-based construction.
     """
     import numpy as np
     if pw_train.ndim == 3:
-        # Average across T features per pathway
         pw_train = pw_train.mean(axis=2)
 
-    # (N, K) → correlation matrix (K, K)
-    # np.corrcoef expects (K, N)
     corr = np.corrcoef(pw_train.T)
+    np.fill_diagonal(corr, 0.0)
     K = len(pathway_names)
+
+    if top_k is not None:
+        top_k = min(top_k, K - 1)
+        abs_corr = np.abs(corr)
+        src, dst = [], []
+        for i in range(K):
+            neighbors = np.argpartition(abs_corr[i], -top_k)[-top_k:]
+            for j in neighbors:
+                src.extend([i, j])
+                dst.extend([j, i])
+        # deduplicate
+        edges = set(zip(src, dst))
+        edges = [(s, d) for s, d in edges if s != d]
+        if not edges:
+            return torch.zeros(2, 0, dtype=torch.long)
+        src, dst = zip(*edges)
+        return torch.tensor([list(src), list(dst)], dtype=torch.long)
 
     src, dst = [], []
     for i in range(K):

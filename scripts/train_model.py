@@ -141,7 +141,10 @@ def parse_args():
     p.add_argument("--jaccard_min_score", type=float, default=0.1,
                    help="GNN + graph_method=jaccard: minimum Jaccard similarity for an edge.")
     p.add_argument("--corr_threshold", type=float, default=0.3,
-                   help="GNN + graph_method=score_correlation: absolute Pearson threshold for an edge.")
+                   help="GNN + graph_method=score_correlation: absolute Pearson threshold for an edge (ignored if --corr_top_k is set).")
+    p.add_argument("--corr_top_k", type=int, default=None,
+                   help="GNN + graph_method=score_correlation: K-NN graph — each node keeps its top-K correlated neighbors. "
+                        "Bounds edge count at O(K*nodes); recommended over --corr_threshold for large feature sets.")
     p.add_argument("--top_k_pathways", type=int, default=None,
                    help="Keep only the top-K pathways by the feature selection method. "
                         "Applied before any model is fit. Omit to use all pathways.")
@@ -583,7 +586,9 @@ def run_gnn(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, o
 
     elif method == "score_correlation":
         edge_index = build_score_correlation_edge_index(
-            pw[idx_tr], pw_names, threshold=args.corr_threshold,
+            pw[idx_tr], pw_names,
+            threshold=args.corr_threshold,
+            top_k=args.corr_top_k,
         )
 
     elif method == "string":
