@@ -237,6 +237,33 @@ class PathwayGNN(nn.Module):
         scores = F.relu((grads * activations).mean(dim=-1))  # (batch*K,)
         return scores.reshape(batch_size, K).detach()
 
+    def get_node_embeddings(
+        self,
+        pathway_features: torch.Tensor,
+        covariates: torch.Tensor = None,
+        edge_index: torch.Tensor = None,
+    ) -> torch.Tensor:
+        """
+        Extract post-convolution node embeddings (no gradient).
+        Returns (batch, K, embed_dim).
+        """
+        if edge_index is None:
+            edge_index = getattr(self, 'edge_index', None)
+
+        batch_size = pathway_features.size(0)
+        K = self.n_pathways
+
+        with torch.no_grad():
+            if self.fully_connected:
+                x = self.input_proj(pathway_features.reshape(batch_size * K, pathway_features.size(2)))
+                return x.reshape(batch_size, K, self.embed_dim)
+
+            x_flat, batch_edge_index, batch_vec = self._build_batch_graph(pathway_features, edge_index)
+            x = self.input_proj(x_flat)
+            for layer in self.sage_layers:
+                x = layer(x, batch_edge_index)
+            return x.reshape(batch_size, K, self.embed_dim)
+
 
 def build_string_edge_index(
     pathway_gene_sets: dict,

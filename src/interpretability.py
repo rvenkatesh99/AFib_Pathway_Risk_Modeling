@@ -150,10 +150,12 @@ def compute_gradcam_pathway_ranking(
     test_loader,
     pathway_names: list,
     device: str = "cpu",
-) -> dict:
+) -> tuple:
     """
-    Compute mean GradCAM node attribution across test set for the GNN.
-    Returns {pathway_name: mean_gradcam_score} sorted descending.
+    Compute per-sample and mean GradCAM node attribution across test set.
+    Returns (ranking_dict, per_sample_array):
+      - ranking_dict: {pathway_name: mean_gradcam_score} sorted descending
+      - per_sample_array: np.ndarray of shape (N_test, K)
     """
     gnn_model.eval()
     all_scores = []
@@ -162,6 +164,27 @@ def compute_gradcam_pathway_ranking(
         cov = batch["covariates"].to(device)
         scores = gnn_model.get_node_gradcam(pw, cov)  # (batch, K)
         all_scores.append(scores.cpu().numpy())
-    mean_scores = np.concatenate(all_scores, axis=0).mean(axis=0)  # (K,)
+    per_sample = np.concatenate(all_scores, axis=0)   # (N_test, K)
+    mean_scores = per_sample.mean(axis=0)              # (K,)
     importance = dict(zip(pathway_names, mean_scores.tolist()))
-    return dict(sorted(importance.items(), key=lambda x: -x[1]))
+    ranking = dict(sorted(importance.items(), key=lambda x: -x[1]))
+    return ranking, per_sample
+
+
+def compute_node_embeddings(
+    gnn_model,
+    test_loader,
+    device: str = "cpu",
+) -> np.ndarray:
+    """
+    Extract post-convolution node embeddings for every test individual.
+    Returns np.ndarray of shape (N_test, K, embed_dim).
+    """
+    gnn_model.eval()
+    all_embeddings = []
+    for batch in test_loader:
+        pw = batch["pathway_features"].to(device)
+        cov = batch["covariates"].to(device)
+        emb = gnn_model.get_node_embeddings(pw, cov)  # (batch, K, embed_dim)
+        all_embeddings.append(emb.cpu().numpy())
+    return np.concatenate(all_embeddings, axis=0)      # (N_test, K, embed_dim)

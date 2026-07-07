@@ -48,7 +48,7 @@ from src.models.pathway_gnn import (
 from src.metrics import compute_metrics, bootstrap_metrics
 from src.interpretability import (
     get_attention_pathway_ranking, get_l1_pathway_ranking, get_rf_pathway_ranking,
-    compute_gradcam_pathway_ranking, compute_gradient_covariate_importance,
+    compute_gradcam_pathway_ranking, compute_node_embeddings, compute_gradient_covariate_importance,
 )
 
 # ── Hyperparameter grids (Cartesian product of each list) ────────────────────
@@ -630,7 +630,12 @@ def run_gnn(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, o
                  edge_index=edge_index, fully_connected=(method == "fully_connected"))
 
     def post(model, test_loader, pw_names, out_dir):
-        ranking = compute_gradcam_pathway_ranking(model, test_loader, pw_names, device="cpu")
+        ranking, per_sample_gradcam = compute_gradcam_pathway_ranking(
+            model, test_loader, pw_names, device="cpu"
+        )
+        np.save(os.path.join(out_dir, "gradcam_scores.npy"), per_sample_gradcam)
+        node_embeddings = compute_node_embeddings(model, test_loader, device="cpu")
+        np.save(os.path.join(out_dir, "node_embeddings.npy"), node_embeddings)
         return ranking, None
 
     # batch_size=32: GNN materialises the full edge set per sample in the batch;
