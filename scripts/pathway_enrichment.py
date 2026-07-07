@@ -192,15 +192,13 @@ def run_ora(sel_genes, bg_genes, out_dir, tag, top_n=20):
 
 
 def _plot_ora(enr_df, out_dir, tag, top_n=20):
-    per_lib = top_n // len(ENRICHR_LIBRARIES)
-    per_lib = max(per_lib, 2)
-
-    sig_parts = []
-    for lib in ENRICHR_LIBRARIES:
-        sub = enr_df[(enr_df["library"] == lib) & (enr_df["Adjusted P-value"] < 0.05)]
-        sub = sub.sort_values("Combined Score", ascending=False).head(per_lib)
-        sig_parts.append(sub)
-    sig = pd.concat(sig_parts, ignore_index=True).copy()
+    sig = (enr_df[enr_df["Adjusted P-value"] < 0.05]
+           .sort_values("Adjusted P-value")
+           .groupby("library", group_keys=False)
+           .head(10)
+           .sort_values("Adjusted P-value")
+           .head(top_n)
+           .copy())
 
     if sig.empty:
         sig = enr_df.sort_values("Adjusted P-value").head(top_n).copy()
