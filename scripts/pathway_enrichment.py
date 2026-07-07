@@ -191,8 +191,14 @@ def run_ora(sel_genes, bg_genes, out_dir, tag, top_n=20):
     return enr_df
 
 
-def _plot_ora(enr_df, out_dir, tag, top_n=20):
-    sig = (enr_df[enr_df["Adjusted P-value"] < 0.05]
+def _plot_ora(enr_df, out_dir, tag, top_n=20, max_geneset_size=500):
+    enr_df = enr_df.copy()
+    enr_df["gene_count"] = enr_df["Genes"].apply(_gene_count)
+    filtered = enr_df[
+        (enr_df["Adjusted P-value"] < 0.05) &
+        (enr_df["gene_count"] <= max_geneset_size)
+    ]
+    sig = (filtered
            .sort_values("Adjusted P-value")
            .groupby("library", group_keys=False)
            .head(10)
@@ -201,7 +207,8 @@ def _plot_ora(enr_df, out_dir, tag, top_n=20):
            .copy())
 
     if sig.empty:
-        sig = enr_df.sort_values("Adjusted P-value").head(top_n).copy()
+        sig = (enr_df[enr_df["gene_count"] <= max_geneset_size]
+               .sort_values("Adjusted P-value").head(top_n).copy())
         if sig.empty:
             print("  No ORA results at all")
             return
@@ -211,7 +218,6 @@ def _plot_ora(enr_df, out_dir, tag, top_n=20):
         print(f"  Plotting {len(sig)} terms across {n_libs} databases")
 
     sig["-log10(FDR)"] = -np.log10(sig["Adjusted P-value"].clip(lower=1e-300))
-    sig["gene_count"]  = sig["Genes"].apply(_gene_count)
     sig["term_wrapped"] = sig["Term"].apply(lambda t: "\n".join(textwrap.wrap(t, 45)))
     sig = sig.sort_values("-log10(FDR)")
 
