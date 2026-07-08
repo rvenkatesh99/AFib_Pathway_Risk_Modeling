@@ -29,6 +29,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+import seaborn as sns
 from sklearn.metrics import roc_curve, auc, precision_recall_curve, average_precision_score
 
 # ── Shared style ──────────────────────────────────────────────────────────────
@@ -39,18 +40,41 @@ MODEL_ORDER = [
     "gnn_jaccard", "gnn_score_correlation", "gnn_string", "gnn_fully_connected",
 ]
 
+# Tableau-10 palette — vivid, perceptually distinct
+_T10 = [
+    "#4E79A7",  # blue
+    "#F28E2B",  # orange
+    "#E15759",  # red
+    "#76B7B2",  # teal
+    "#59A14F",  # green
+    "#EDC948",  # yellow
+    "#B07AA1",  # purple
+    "#FF9DA7",  # pink
+    "#9C755F",  # brown
+    "#BAB0AC",  # gray
+]
+
 MODEL_COLORS = {
-    "l1_logistic":            "#b2abd2",
-    "elasticnet":             "#8073ac",
-    "random_forest":          "#f4a582",
-    "global_attention":       "#2166ac",
-    "transformer":            "#4dac26",
-    "gnn":                    "#d01c8b",
-    "gnn_jaccard":            "#d01c8b",
-    "gnn_score_correlation":  "#e56fac",
-    "gnn_string":             "#f0a0cc",
-    "gnn_fully_connected":    "#c0007a",
+    # Linear models — blues (simple, regularized)
+    "l1_logistic":            "#4E79A7",
+    "elasticnet":             "#76B7B2",
+    # Tree
+    "random_forest":          "#F28E2B",
+    # Deep learning — greens/purples
+    "global_attention":       "#59A14F",
+    "transformer":            "#B07AA1",
+    # GNN family — reds (distinct from all above)
+    "gnn":                    "#E15759",
+    "gnn_jaccard":            "#E15759",
+    "gnn_score_correlation":  "#FF9DA7",
+    "gnn_string":             "#9C755F",
+    "gnn_fully_connected":    "#EDC948",
 }
+
+# Shared colormaps
+_CMAP_SEQ = sns.cubehelix_palette(start=.5, rot=-.75, as_cmap=True)   # sequential
+_CMAP_DIV = sns.diverging_palette(220, 20, as_cmap=True)              # diverging
+
 
 # Logical display order for feature set rows (actual names in metrics CSV).
 # Rows not in this list are appended alphabetically at the end.
@@ -114,25 +138,25 @@ def _style():
     plt.rcParams.update({
         # Fonts
         "font.family":       "sans-serif",
-        "font.sans-serif":   ["Arial", "Helvetica", "DejaVu Sans"],
-        "font.size":         8,
-        "axes.labelsize":    9,
-        "axes.titlesize":    9,
+        "font.sans-serif":   ["Arial", "Helvetica Neue", "DejaVu Sans"],
+        "font.size":         10,
+        "axes.labelsize":    10,
+        "axes.titlesize":    11,
         "axes.titleweight":  "bold",
-        "xtick.labelsize":   8,
-        "ytick.labelsize":   8,
-        "legend.fontsize":   8,
+        "xtick.labelsize":   9,
+        "ytick.labelsize":   9,
+        "legend.fontsize":   9,
         "legend.frameon":    False,
         "legend.borderpad":  0.4,
         # Axes
         "axes.spines.top":   False,
         "axes.spines.right": False,
-        "axes.linewidth":    0.7,
+        "axes.linewidth":    1.0,
         "axes.grid":         False,
-        "xtick.major.width": 0.7,
-        "ytick.major.width": 0.7,
-        "xtick.major.size":  3,
-        "ytick.major.size":  3,
+        "xtick.major.width": 1.0,
+        "ytick.major.width": 1.0,
+        "xtick.major.size":  4,
+        "ytick.major.size":  4,
         "xtick.direction":   "out",
         "ytick.direction":   "out",
         # Figure
@@ -142,7 +166,7 @@ def _style():
         "pdf.fonttype":      42,
         "ps.fonttype":       42,
         "svg.fonttype":      "none",
-        "savefig.pad_inches": 0.05,
+        "savefig.pad_inches": 0.08,
     })
 
 
@@ -189,10 +213,11 @@ def plot_auroc_comparison(metrics_df, feature_sets, out_path):
 
         ax.bar(x + offsets[i], aurocs, width,
                color=MODEL_COLORS.get(model, "#aaaaaa"),
-               edgecolor="none", label=model.replace("_", " "), zorder=2)
+               edgecolor="white", linewidth=0.5,
+               label=model.replace("_", " "), zorder=2)
         ax.errorbar(x + offsets[i], aurocs,
                     yerr=[yerr_lo, yerr_hi],
-                    fmt="none", color="#333333", linewidth=0.7, capsize=1.5, zorder=3)
+                    fmt="none", color="#333333", linewidth=0.9, capsize=2.0, zorder=3)
 
     ax.axhline(0.5, color="#888888", linestyle="--", linewidth=0.7, alpha=0.7)
     ax.set_xticks(x)
@@ -222,7 +247,7 @@ def _draw_heatmap(ax, pivot, feature_sets, models, title, vmin=None, vmax=None):
         vmin = max(0.5, finite.min() - 0.02)
     if vmax is None:
         vmax = min(1.0, finite.max() + 0.02)
-    im = ax.imshow(pivot.values, aspect="auto", cmap="RdYlGn", vmin=vmin, vmax=vmax)
+    im = ax.imshow(pivot.values, aspect="auto", cmap=_CMAP_SEQ, vmin=vmin, vmax=vmax)
     for i in range(len(feature_sets)):
         for j in range(len(models)):
             v = pivot.values[i, j]
@@ -381,9 +406,10 @@ def plot_auroc_dotplot(metrics_df, feature_sets, out_path):
             auroc = r["auroc"]
             lo, hi = r.get("auroc_ci_lower", np.nan), r.get("auroc_ci_upper", np.nan)
             color = MODEL_COLORS.get(model, "#aaaaaa")
-            ax.plot(auroc, row, "o", color=color, markersize=4, zorder=3, clip_on=False)
+            ax.plot(auroc, row, "o", color=color, markersize=5.5,
+                    markeredgecolor="white", markeredgewidth=0.6, zorder=3, clip_on=False)
             if not pd.isna(lo) and not pd.isna(hi):
-                ax.plot([lo, hi], [row, row], "-", color=color, linewidth=1.2, zorder=2, alpha=0.8)
+                ax.plot([lo, hi], [row, row], "-", color=color, linewidth=1.5, zorder=2, alpha=0.85)
             group_rows.append(row)
             row += 1
 
@@ -408,7 +434,8 @@ def plot_auroc_dotplot(metrics_df, feature_sets, out_path):
 
     handles = [plt.Line2D([0], [0], marker="o", color="w",
                           markerfacecolor=MODEL_COLORS.get(m, "#aaa"),
-                          markersize=5, label=m.replace("_", " ")) for m in models]
+                          markeredgecolor="white", markeredgewidth=0.5,
+                          markersize=6.5, label=m.replace("_", " ")) for m in models]
     ax.legend(handles=handles, frameon=False,
               bbox_to_anchor=(1.01, 1), loc="upper left",
               title="Model", title_fontsize=plt.rcParams["legend.fontsize"])
@@ -500,7 +527,7 @@ def plot_cross_tissue_heatmap(ranking_df, model, top_n, out_path):
     n_pathways = len(top)
     # Wide enough for labels: left margin + heatmap columns + colorbar
     fig, ax = plt.subplots(figsize=(max(7, n_tissues * 1.8 + 4), max(6, n_pathways * 0.55)))
-    im = ax.imshow(top.values, aspect="auto", cmap="YlOrRd", vmin=0, vmax=100)
+    im = ax.imshow(top.values, aspect="auto", cmap=_CMAP_SEQ, vmin=0, vmax=100)
 
     for i in range(n_pathways):
         for j in range(n_tissues):
@@ -942,9 +969,10 @@ def plot_pathway_lollipop(ranking_df, feature_set, models, top_n, out_path):
     for ax, model in zip(axes, models_present):
         vals = top[model].values
         color = MODEL_COLORS.get(model, "#aaaaaa")
-        ax.hlines(y, 0, vals, color="#dddddd", linewidth=0.8, zorder=1)
-        ax.plot(vals, y, "o", color=color, markersize=4, zorder=2)
-        ax.axvline(50, color="#aaaaaa", linestyle="--", linewidth=0.6)
+        ax.hlines(y, 0, vals, color="#e0e0e0", linewidth=1.2, zorder=1)
+        ax.plot(vals, y, "o", color=color, markersize=5.5,
+                markeredgecolor="white", markeredgewidth=0.6, zorder=2)
+        ax.axvline(50, color="#bbbbbb", linestyle="--", linewidth=0.7)
         ax.set_xlim(0, 105)
         ax.set_xlabel("Percentile rank")
         ax.set_title(model.replace("_", " "))
