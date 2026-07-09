@@ -990,6 +990,123 @@ def plot_pathway_lollipop(ranking_df, feature_set, models, top_n, out_path):
     _save(fig, out_path)
 
 
+# ── 12. Multi-metric forest plot — best models × main feature sets ────────────
+
+MAIN_FEATURE_SETS = [
+    "gwas_prs",
+    "gwas_grex_HAA_HLV_prs",
+    "gwas_grex_HAA_HLV_AA_prs",
+]
+MAIN_FS_LABELS = {
+    "gwas_prs":                   "GWAS + PRS",
+    "gwas_grex_HAA_HLV_prs":      "GWAS + GReX\n(HAA, HLV) + PRS",
+    "gwas_grex_HAA_HLV_AA_prs":   "GWAS + GReX\n(HAA, HLV, AA) + PRS",
+}
+
+METRICS_CONFIG = [
+    ("auroc",             "AUROC",             "auroc_ci_lower",  "auroc_ci_upper",  0.5,  1.0),
+    ("auprc",             "AUPRC",             None,              None,              0.0,  1.0),
+    ("sensitivity",       "Sensitivity",       None,              None,              0.0,  1.0),
+    ("specificity",       "Specificity",       None,              None,              0.0,  1.0),
+    ("balanced_accuracy", "Balanced\nAccuracy",None,              None,              0.0,  1.0),
+    ("brier_score",       "Brier Score",       None,              None,              0.0,  0.3),
+]
+
+
+def plot_best_models_forest(metrics_df, best_models, out_path,
+                            feature_sets=None, gnn_metrics_df=None):
+    """
+    Multi-metric forest plot: one column per metric, rows grouped by feature set,
+    colored dots per model with 95% CI whiskers where available.
+
+    best_models: ordered list of model keys to include (e.g. ['l1_logistic', 'transformer', 'gnn_jaccard'])
+    """
+    fs_list = feature_sets or MAIN_FEATURE_SETS
+
+    # Merge GNN rows into main df if provided
+    df = metrics_df.copy()
+    if gnn_metrics_df is not None:
+        gnn_long = gnn_metrics_df.copy()
+        gnn_long["model"] = "gnn_" + gnn_long["graph_method"]
+        gnn_long = gnn_long.rename(columns={"graph_method": "_gm"})
+        df = pd.concat([df, gnn_long], ignore_index=True)
+
+    n_metrics = len(METRICS_CONFIG)
+    fig, axes = plt.subplots(
+        1, n_metrics,
+        figsize=(n_metrics * 2.4, max(3.5, len(fs_list) * len(best_models) * 0.22 + 1.2)),
+        sharey=True,
+    )
+
+    y_ticks, y_labels = [], []
+    row = 0
+    shade_rows = []
+
+    for fi, fs in enumerate(fs_list):
+        group_start = row
+        for model in best_models:
+            sub = df[(df["feature_set"] == fs) & (df["model"] == model)]
+            if sub.empty:
+                row += 1
+                continue
+            r = sub.iloc[0]
+
+            for ax, (col, label, lo_col, hi_col, vmin, vmax) in zip(axes, METRICS_CONFIG):
+                val = r.get(col, np.nan)
+                if pd.isna(val):
+                    continue
+                lo = r.get(lo_col, np.nan) if lo_col else np.nan
+                hi = r.get(hi_col, np.nan) if hi_col else np.nan
+                color = MODEL_COLORS.get(model, "#aaaaaa")
+                ax.plot(val, row, "o", color=color, markersize=5.5,
+                        markeredgecolor="white", markeredgewidth=0.6, zorder=3, clip_on=False)
+                if not (pd.isna(lo) or pd.isna(hi)):
+                    ax.plot([lo, hi], [row, row], "-", color=color,
+                            linewidth=1.5, alpha=0.85, zorder=2)
+
+            row += 1
+
+        if row > group_start:
+            mid = (group_start + row - 1) / 2
+            y_ticks.append(mid)
+            y_labels.append(MAIN_FS_LABELS.get(fs, fs.replace("_", " ")))
+            if fi % 2 == 0:
+                shade_rows.append((group_start - 0.5, row - 0.5))
+        row += 0.5  # gap between feature sets
+
+    for ax, (col, label, lo_col, hi_col, vmin, vmax) in zip(axes, METRICS_CONFIG):
+        for y0, y1 in shade_rows:
+            ax.axhspan(y0, y1, color="#f5f5f5", zorder=0, linewidth=0)
+        # Reference lines
+        if col == "auroc":
+            ax.axvline(0.5, color="#bbbbbb", linestyle="--", linewidth=0.7)
+        if col == "brier_score":
+            ax.axvline(0.2, color="#bbbbbb", linestyle="--", linewidth=0.7)
+        ax.set_xlim(vmin - 0.02, vmax + 0.02)
+        ax.set_xlabel(label, fontsize=9)
+        ax.invert_yaxis()
+        ax.spines["left"].set_visible(False)
+        ax.tick_params(left=False)
+        ax.set_yticks(y_ticks)
+
+    axes[0].set_yticklabels(y_labels, fontsize=9)
+
+    # Legend
+    handles = [
+        plt.Line2D([0], [0], marker="o", color="w",
+                   markerfacecolor=MODEL_COLORS.get(m, "#aaa"),
+                   markeredgecolor="white", markeredgewidth=0.5,
+                   markersize=6, label=m.replace("_", " "))
+        for m in best_models
+    ]
+    axes[-1].legend(handles=handles, loc="lower right",
+                    bbox_to_anchor=(1.0, 0.0), fontsize=8,
+                    title="Model", title_fontsize=8)
+
+    fig.suptitle("Model performance across feature sets — all metrics", y=1.01)
+    _save(fig, out_path)
+
+
 # ── Helper: load saved probs/labels ───────────────────────────────────────────
 
 def _load_probs_labels(agg_dir):
@@ -1024,6 +1141,8 @@ def parse_args():
     p.add_argument("--top_n", type=int, default=30)
     p.add_argument("--feature_sets", nargs="*", default=None,
                    help="Subset of feature sets to plot. Default: all in metrics_summary.csv.")
+    p.add_argument("--best_models", nargs="*", default=None,
+                   help="Models for multi-metric forest plot. Default: l1_logistic transformer gnn_jaccard.")
     return p.parse_args()
 
 
@@ -1160,6 +1279,16 @@ def main():
                 delong_df, fs,
                 os.path.join(args.out_dir, f"07_delong_{tag}.png"),
             )
+
+    # ── 12. Multi-metric forest plot ─────────────────────────────────────────
+    best_models = args.best_models or ["l1_logistic", "transformer", "gnn_jaccard"]
+    print(f"Plotting multi-metric forest plot (models: {best_models})...")
+    plot_best_models_forest(
+        metrics_df, best_models,
+        os.path.join(args.out_dir, "12_best_models_forest.pdf"),
+        feature_sets=MAIN_FEATURE_SETS,
+        gnn_metrics_df=gnn_metrics_df,
+    )
 
     # ── 8. ROC curves ─────────────────────────────────────────────────────────
     if all_probs:
