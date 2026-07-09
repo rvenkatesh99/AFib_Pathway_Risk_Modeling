@@ -389,22 +389,43 @@ def plot_auroc_dotplot(metrics_df, feature_sets, out_path):
     """
     models = _model_order(metrics_df["model"].unique())
 
-    fig, ax = plt.subplots(figsize=(5, max(3.5, len(feature_sets) * len(models) * 0.18 + 1)))
+    n_rows_est = sum(
+        sum(1 for m in models
+            if not metrics_df[(metrics_df["feature_set"] == fs) &
+                               (metrics_df["model"] == m)].empty)
+        for fs in feature_sets
+    )
+    fig, ax = plt.subplots(figsize=(5.5, max(4, n_rows_est * 0.32 + len(feature_sets) * 0.4 + 1.2)))
+
+    model_labels = {
+        "l1_logistic":           "L1 Logistic",
+        "elasticnet":            "ElasticNet",
+        "random_forest":         "Random Forest",
+        "global_attention":      "Global Attention",
+        "transformer":           "Transformer",
+        "gnn_jaccard":           "GNN (Jaccard)",
+        "gnn_score_correlation": "GNN (Score Corr.)",
+        "gnn_string":            "GNN (STRING)",
+        "gnn_fully_connected":   "GNN (FC)",
+        "gnn":                   "GNN",
+    }
 
     y_ticks, y_labels = [], []
     row = 0
     for fi, fs in enumerate(feature_sets):
-        sub = metrics_df[metrics_df["feature_set"] == fs].set_index("model")
+        sub = (metrics_df[metrics_df["feature_set"] == fs]
+               .drop_duplicates(subset=["model"])
+               .set_index("model"))
         group_rows = []
-        # Alternate shading every other feature set
-        row_start = row
         for model in models:
-            if model not in sub.index or pd.isna(sub.loc[model, "auroc"]):
-                row += 1
+            if model not in sub.index:
                 continue
             r = sub.loc[model]
-            auroc = r["auroc"]
-            lo, hi = r.get("auroc_ci_lower", np.nan), r.get("auroc_ci_upper", np.nan)
+            auroc = r.get("auroc", np.nan)
+            if pd.isna(auroc):
+                continue
+            lo = r.get("auroc_ci_lower", np.nan)
+            hi = r.get("auroc_ci_upper", np.nan)
             color = MODEL_COLORS.get(model, "#aaaaaa")
             ax.plot(auroc, row, "o", color=color, markersize=5.5,
                     markeredgecolor="white", markeredgewidth=0.6, zorder=3, clip_on=False)
@@ -416,7 +437,8 @@ def plot_auroc_dotplot(metrics_df, feature_sets, out_path):
         if group_rows:
             mid = (group_rows[0] + group_rows[-1]) / 2
             y_ticks.append(mid)
-            y_labels.append(fs.replace("_covs", "").replace("_", " "))
+            fs_key = fs.replace("_covs", "")
+            y_labels.append(MAIN_FS_LABELS.get(fs_key, fs_key.replace("_", " ")))
             if fi % 2 == 0:
                 ax.axhspan(group_rows[0] - 0.5, group_rows[-1] + 0.5,
                            color="#f5f5f5", zorder=0, linewidth=0)
@@ -424,21 +446,25 @@ def plot_auroc_dotplot(metrics_df, feature_sets, out_path):
 
     finite_auroc = metrics_df["auroc"].dropna()
     ax.axvline(0.5, color="#888888", linestyle="--", linewidth=0.7, alpha=0.7)
-    ax.set_xlim(max(0.45, finite_auroc.min() - 0.02),
-                min(1.0,  finite_auroc.max() + 0.03))
+    if len(finite_auroc):
+        ax.set_xlim(max(0.45, float(finite_auroc.min()) - 0.02),
+                    min(1.0,  float(finite_auroc.max()) + 0.03))
     ax.set_yticks(y_ticks)
-    ax.set_yticklabels(y_labels)
+    ax.set_yticklabels(y_labels, fontsize=9)
     ax.invert_yaxis()
-    ax.set_xlabel("AUROC (95% CI)")
-    ax.set_title("Model performance by feature set")
+    ax.set_xlabel("AUROC (95% CI)", fontsize=10)
+    ax.set_title("Model performance by feature set", fontsize=11, fontweight="bold")
+    ax.spines["left"].set_visible(False)
+    ax.tick_params(left=False)
 
     handles = [plt.Line2D([0], [0], marker="o", color="w",
                           markerfacecolor=MODEL_COLORS.get(m, "#aaa"),
                           markeredgecolor="white", markeredgewidth=0.5,
-                          markersize=6.5, label=m.replace("_", " ")) for m in models]
+                          markersize=6.5, label=model_labels.get(m, m.replace("_", " ")))
+               for m in models]
     ax.legend(handles=handles, frameon=False,
               bbox_to_anchor=(1.01, 1), loc="upper left",
-              title="Model", title_fontsize=plt.rcParams["legend.fontsize"])
+              title="Model", title_fontsize=9)
     _save(fig, out_path)
 
 
