@@ -138,12 +138,13 @@ def main():
 
         m = met["metrics"]
         ci = met.get("bootstrap_95ci", {})
-        auroc_ci = ci.get("auroc", {})
-        auprc_ci = ci.get("auprc", {})
-        f1_ci    = ci.get("f1_at_opt_threshold", {})
-        ba_ci    = ci.get("balanced_accuracy", {})
-        sen_ci   = ci.get("sensitivity", {})
-        spe_ci   = ci.get("specificity", {})
+        auroc_ci  = ci.get("auroc", {})
+        auprc_ci  = ci.get("auprc", {})
+        f1_ci     = ci.get("f1_at_opt_threshold", {})
+        ba_ci     = ci.get("balanced_accuracy", {})
+        sen_ci    = ci.get("sensitivity", {})
+        spe_ci    = ci.get("specificity", {})
+        brier_ci  = ci.get("brier_score", {})
 
         metrics_rows.append({
             "feature_set": fs,
@@ -155,6 +156,8 @@ def main():
             "auprc_ci_lower": auprc_ci.get("ci_lower"),
             "auprc_ci_upper": auprc_ci.get("ci_upper"),
             "brier_score": m.get("brier_score"),
+            "brier_score_ci_lower": brier_ci.get("ci_lower"),
+            "brier_score_ci_upper": brier_ci.get("ci_upper"),
             "threshold": m.get("threshold"),
             "sensitivity": m.get("sensitivity"),
             "sensitivity_ci_lower": sen_ci.get("ci_lower"),

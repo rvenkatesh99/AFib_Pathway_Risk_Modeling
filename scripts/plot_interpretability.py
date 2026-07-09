@@ -1004,12 +1004,12 @@ MAIN_FS_LABELS = {
 }
 
 METRICS_CONFIG = [
-    ("auroc",             "AUROC",             "auroc_ci_lower",  "auroc_ci_upper",  0.5,  1.0),
-    ("auprc",             "AUPRC",             None,              None,              0.0,  1.0),
-    ("sensitivity",       "Sensitivity",       None,              None,              0.0,  1.0),
-    ("specificity",       "Specificity",       None,              None,              0.0,  1.0),
-    ("balanced_accuracy", "Balanced\nAccuracy",None,              None,              0.0,  1.0),
-    ("brier_score",       "Brier Score",       None,              None,              0.0,  0.3),
+    ("auroc",             "AUROC",             "auroc_ci_lower",             "auroc_ci_upper",             0.5,  1.0),
+    ("auprc",             "AUPRC",             "auprc_ci_lower",             "auprc_ci_upper",             0.0,  1.0),
+    ("sensitivity",       "Sensitivity",       "sensitivity_ci_lower",       "sensitivity_ci_upper",       0.0,  1.0),
+    ("specificity",       "Specificity",       "specificity_ci_lower",       "specificity_ci_upper",       0.0,  1.0),
+    ("balanced_accuracy", "Balanced\nAccuracy","balanced_accuracy_ci_lower",  "balanced_accuracy_ci_upper", 0.0,  1.0),
+    ("brier_score",       "Brier Score",       "brier_score_ci_lower",       "brier_score_ci_upper",       0.0,  0.3),
 ]
 
 
