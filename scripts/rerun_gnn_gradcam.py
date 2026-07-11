@@ -1,0 +1,233 @@
+"""
+Rerun GNN GradCAM attribution only — no retraining.
+
+Loads saved gnn.pt weights from a completed run, reconstructs the graph and
+test DataLoader, then regenerates:
+  - ranking.json          (pathway GradCAM scores)
+  - gradcam_scores.npy    (per-sample scores, shape [N_test, K])
+  - node_embeddings.npy   (per-sample node embeddings)
+
+ranking.json is overwritten in-place, so the existing metrics.json / probs_test.npy
+/ best_hparams.json are untouched — AUROC numbers do not change.
+
+Usage (example — jaccard, gwas_prs):
+  python scripts/rerun_gnn_gradcam.py \
+    --results_dir AF_PATHWAY_SCORES/PATHWAY_MODELING/gwas_prs_covs_jaccard/gnn/ \
+    --splits_dir  AF_PATHWAY_SCORES/PATHWAY_MODELING/splits/ \
+    --pathway_cols data/pathway_cols_gwas.txt \
+    --covariates_file AF_PATHWAY_SCORES/PATHWAY_MODELING/Feature_Files/covariates_PRS.csv \
+    --prs_col PRS_std \
+    --graph_method jaccard \
+    --pathway_gene_sets AF_PATHWAY_SCORES/GNN_PATHWAY/pathway_gene_sets.json
+
+  python scripts/rerun_gnn_gradcam.py \
+    --results_dir AF_PATHWAY_SCORES/PATHWAY_MODELING/gwas_grex_HAA_HLV_prs_covs_jaccard/gnn/ \
+    --splits_dir  AF_PATHWAY_SCORES/PATHWAY_MODELING/splits/ \
+    --pathway_cols data/pathway_cols_gwas_grex_HAA_HLV.txt \
+    --covariates_file AF_PATHWAY_SCORES/PATHWAY_MODELING/Feature_Files/covariates_PRS.csv \
+    --prs_col PRS_std \
+    --graph_method jaccard \
+    --pathway_gene_sets AF_PATHWAY_SCORES/GNN_PATHWAY/pathway_gene_sets.json
+
+  python scripts/rerun_gnn_gradcam.py \
+    --results_dir AF_PATHWAY_SCORES/PATHWAY_MODELING/gwas_grex_HAA_HLV_AA_prs_covs_jaccard/gnn/ \
+    --splits_dir  AF_PATHWAY_SCORES/PATHWAY_MODELING/splits/ \
+    --pathway_cols data/pathway_cols_gwas_grex_HAA_HLV_AA.txt \
+    --covariates_file AF_PATHWAY_SCORES/PATHWAY_MODELING/Feature_Files/covariates_PRS.csv \
+    --prs_col PRS_std \
+    --graph_method jaccard \
+    --pathway_gene_sets AF_PATHWAY_SCORES/GNN_PATHWAY/pathway_gene_sets.json
+"""
+
+import argparse
+import json
+import os
+import sys
+
+import numpy as np
+import torch
+from sklearn.preprocessing import StandardScaler
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src.trainer import load_data, make_loaders
+from src.models.pathway_gnn import (
+    PathwayGNN,
+    build_jaccard_edge_index,
+    build_score_correlation_edge_index,
+    build_fully_connected_edge_index,
+)
+from src.interpretability import compute_gradcam_pathway_ranking, compute_node_embeddings
+
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+class _NumpyEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
+
+
+def _scale_splits(pw, cov, idx_tr, idx_va, idx_te):
+    pw_scaled  = pw.copy().astype(float)
+    cov_scaled = cov.copy().astype(float)
+
+    if cov.shape[1] > 0:
+        cov_scaler = StandardScaler().fit(cov[idx_tr])
+        for idx in (idx_tr, idx_va, idx_te):
+            cov_scaled[idx] = cov_scaler.transform(cov[idx])
+
+    if pw.shape[1] > 0:
+        orig_shape = pw.shape[1:]
+        pw_2d = pw.reshape(len(pw), -1)
+        pw_scaler = StandardScaler().fit(pw_2d[idx_tr])
+        for idx in (idx_tr, idx_va, idx_te):
+            pw_scaled[idx] = pw_scaler.transform(pw_2d[idx]).reshape(-1, *orig_shape)
+
+    return pw_scaled, cov_scaled
+
+
+# ── main ──────────────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(description="Rerun GNN GradCAM without retraining.")
+    parser.add_argument("--results_dir",       required=True,
+                        help="Path to the gnn/ output directory (contains gnn.pt, best_hparams.json)")
+    parser.add_argument("--splits_dir",        required=True,
+                        help="Directory with splits.npz / data_config.json")
+    parser.add_argument("--pathway_cols",      required=True,
+                        help="Text file listing pathway column names (one per line)")
+    parser.add_argument("--covariates_file",   required=True,
+                        help="CSV with covariate columns")
+    parser.add_argument("--prs_col",           default=None,
+                        help="Name of PRS column in covariates_file (optional)")
+    parser.add_argument("--graph_method",      required=True,
+                        choices=["jaccard", "score_correlation", "fully_connected"],
+                        help="Graph construction method used in the original run")
+    parser.add_argument("--pathway_gene_sets", default=None,
+                        help="JSON file mapping pathway → gene list (required for jaccard)")
+    parser.add_argument("--jaccard_min_overlap", type=int,   default=1)
+    parser.add_argument("--jaccard_min_score",   type=float, default=0.0)
+    parser.add_argument("--corr_threshold",      type=float, default=0.0)
+    parser.add_argument("--corr_top_k",          type=int,   default=50)
+    parser.add_argument("--top_k_pathways",      type=int,   default=500)
+    parser.add_argument("--device",              default="cpu")
+    args = parser.parse_args()
+
+    weight_path = os.path.join(args.results_dir, "gnn.pt")
+    hparam_path = os.path.join(args.results_dir, "best_hparams.json")
+    if not os.path.exists(weight_path):
+        raise FileNotFoundError(f"No saved weights at {weight_path} — has the GNN been trained?")
+
+    print(f"Results dir  : {args.results_dir}")
+    print(f"Graph method : {args.graph_method}")
+
+    # ── Load data ─────────────────────────────────────────────────────────────
+    print("\nLoading data...")
+    pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te = load_data(
+        splits_dir=args.splits_dir,
+        pathway_cols_file=args.pathway_cols,
+        covariates_file=args.covariates_file,
+        prs_col=args.prs_col,
+        top_k_pathways=args.top_k_pathways,
+    )
+    K, T = pw.shape[1], (pw.shape[2] if pw.ndim == 3 else 1)
+    C    = cov.shape[1]
+    print(f"  K={K} pathways, T={T} tissues, C={C} covariates")
+    print(f"  Test set: {len(idx_te)} samples")
+
+    pw_s, cov_s = _scale_splits(pw, cov, idx_tr, idx_va, idx_te)
+
+    _, _, test_loader = make_loaders(
+        pw_s[idx_tr], cov_s[idx_tr], labels[idx_tr],
+        pw_s[idx_va], cov_s[idx_va], labels[idx_va],
+        pw_s[idx_te], cov_s[idx_te], labels[idx_te],
+        batch_size=32,
+    )
+
+    # ── Build graph ───────────────────────────────────────────────────────────
+    print("\nBuilding graph...")
+    if args.graph_method == "jaccard":
+        if not args.pathway_gene_sets:
+            raise ValueError("--pathway_gene_sets required for jaccard")
+        with open(args.pathway_gene_sets) as f:
+            gene_sets = {k: set(v) for k, v in json.load(f).items()}
+        edge_index = build_jaccard_edge_index(
+            gene_sets, pw_names,
+            min_overlap=args.jaccard_min_overlap,
+            min_jaccard=args.jaccard_min_score,
+        )
+    elif args.graph_method == "score_correlation":
+        edge_index = build_score_correlation_edge_index(
+            pw_s[idx_tr], pw_names,
+            threshold=args.corr_threshold,
+            top_k=args.corr_top_k,
+        )
+    else:  # fully_connected
+        edge_index = None
+
+    n_edges = edge_index.shape[1] // 2 if edge_index is not None else K * (K - 1) // 2
+    print(f"  {K} nodes, {n_edges} undirected edges")
+
+    # ── Load model ────────────────────────────────────────────────────────────
+    print("\nLoading saved model weights...")
+    with open(hparam_path) as f:
+        hparams = json.load(f)
+
+    # Extract only model constructor kwargs (not lr / weight_decay / epochs etc.)
+    MODEL_HPARAM_KEYS = {"embed_dim", "dropout", "n_layers", "n_heads",
+                         "hidden_dim", "aggregator"}
+    model_kwargs = {k: v for k, v in hparams.items() if k in MODEL_HPARAM_KEYS}
+
+    model = PathwayGNN(
+        n_pathways=K,
+        pathway_input_dim=T,
+        covariate_dim=C,
+        edge_index=edge_index,
+        fully_connected=(args.graph_method == "fully_connected"),
+        **model_kwargs,
+    )
+    model.load_state_dict(torch.load(weight_path, map_location=args.device))
+    model.eval()
+    print(f"  Loaded: {weight_path}")
+
+    # ── Rerun GradCAM ─────────────────────────────────────────────────────────
+    print("\nRunning GradCAM attribution (abs() fix applied)...")
+    ranking, per_sample_gradcam = compute_gradcam_pathway_ranking(
+        model, test_loader, pw_names, device=args.device
+    )
+    np.save(os.path.join(args.results_dir, "gradcam_scores.npy"), per_sample_gradcam)
+    print(f"  gradcam_scores.npy: shape {per_sample_gradcam.shape}")
+
+    print("\nRecomputing node embeddings...")
+    node_embeddings = compute_node_embeddings(model, test_loader, device=args.device)
+    np.save(os.path.join(args.results_dir, "node_embeddings.npy"), node_embeddings)
+    print(f"  node_embeddings.npy: shape {node_embeddings.shape}")
+
+    # ── Overwrite ranking.json (merge with existing covariate ranking if present) ──
+    ranking_path = os.path.join(args.results_dir, "ranking.json")
+    if os.path.exists(ranking_path):
+        with open(ranking_path) as f:
+            existing = json.load(f)
+        # Preserve any covariate entries (non-pathway keys) from the original run
+        existing.update(ranking)
+        ranking = existing
+
+    with open(ranking_path, "w") as f:
+        json.dump(ranking, f, indent=2, cls=_NumpyEncoder)
+
+    top5 = sorted(ranking.items(), key=lambda x: x[1], reverse=True)[:5]
+    print("\nTop-5 pathways by GradCAM:")
+    for name, score in top5:
+        print(f"  {score:.6f}  {name}")
+
+    print(f"\nDone. Outputs written to: {args.results_dir}")
+
+
+if __name__ == "__main__":
+    main()
