@@ -302,17 +302,24 @@ def main():
     np.save(os.path.join(args.results_dir, "node_embeddings.npy"), node_embeddings)
     print(f"  node_embeddings.npy: shape {node_embeddings.shape}")
 
-    # ── Overwrite ranking.json (merge with existing covariate ranking if present) ──
+    # ── Write ranking.json with only the K pathway scores ────────────────────
+    # Do NOT merge with any old ranking.json — it may contain stale scores for
+    # pathways outside the trained K (from a previous broken rerun).
     ranking_path = os.path.join(args.results_dir, "ranking.json")
-    if os.path.exists(ranking_path):
-        with open(ranking_path) as f:
-            existing = json.load(f)
-        # Preserve any covariate entries (non-pathway keys) from the original run
-        existing.update(ranking)
-        ranking = existing
-
     with open(ranking_path, "w") as f:
         json.dump(ranking, f, indent=2, cls=_NumpyEncoder)
+    print(f"\nWrote ranking.json: {len(ranking)} pathways")
+
+    # ── Update graph_info.json with correct pathway names and n_nodes ─────────
+    graph_info_path = os.path.join(args.results_dir, "graph_info.json")
+    if os.path.exists(graph_info_path):
+        with open(graph_info_path) as f:
+            gi = json.load(f)
+        gi["pathway_names"] = pw_names
+        gi["n_nodes"] = len(pw_names)
+        with open(graph_info_path, "w") as f:
+            json.dump(gi, f, indent=2)
+        print(f"Updated graph_info.json: {len(pw_names)} pathways")
 
     top5 = sorted(ranking.items(), key=lambda x: x[1], reverse=True)[:5]
     print("\nTop-5 pathways by GradCAM:")
