@@ -205,7 +205,7 @@ def score_variants_alphagenome(variants_df, tissues, out_dir, api_key=None):
     Call AlphaGenome to predict regulatory effect of each unique variant.
     Returns a DataFrame: rsid  chrom  pos  ref  alt  tissue  delta_score
 
-    delta_score = mean |raw_score| across REGULATORY_TRACKS for that tissue.
+    delta_score = mean |raw_score| across RNA-seq tracks for that GTEx tissue.
     Results are cached to {out_dir}/alphagenome_raw_scores.tsv.
     """
     cache_path = os.path.join(out_dir, "alphagenome_raw_scores.tsv")
@@ -251,12 +251,6 @@ def score_variants_alphagenome(variants_df, tissues, out_dir, api_key=None):
             )
             scores_ann = client.score_variant(interval, variant)
             tidy = variant_scorers.tidy_scores(scores_ann)
-
-            # Filter to regulatory tracks and requested tissues
-            track_mask = tidy["track_name"].str.contains(
-                "|".join(REGULATORY_TRACKS), case=False, na=False
-            )
-            tidy = tidy[track_mask].copy()
 
             tissue_col = next(
                 (c for c in tidy.columns if "gtex" in c.lower() or "tissue" in c.lower()), None
