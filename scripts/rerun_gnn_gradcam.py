@@ -181,32 +181,39 @@ def main():
         batch_size=32,
     )
 
-    # ── Build graph ───────────────────────────────────────────────────────────
-    print("\nBuilding graph...")
-    if args.graph_method == "jaccard":
-        if not args.pathway_gene_sets:
-            raise ValueError("--pathway_gene_sets required for jaccard")
-        with open(args.pathway_gene_sets) as f:
-            gene_sets = {k: set(v) for k, v in json.load(f).items()}
-        edge_index = build_jaccard_edge_index(
-            gene_sets, pw_names,
-            min_overlap=args.jaccard_min_overlap,
-            min_jaccard=args.jaccard_min_score,
-        )
-    elif args.graph_method == "score_correlation":
-        edge_index = build_score_correlation_edge_index(
-            pw_s[idx_tr], pw_names,
-            threshold=args.corr_threshold,
-            top_k=args.corr_top_k,
-        )
-    else:  # fully_connected
-        edge_index = None
-
-    n_edges = edge_index.shape[1] // 2 if edge_index is not None else K * (K - 1) // 2
-    print(f"  {K} nodes, {n_edges} undirected edges")
-
-    # ── Load model ────────────────────────────────────────────────────────────
+    # ── Load checkpoint and extract saved edge_index ──────────────────────────
     print("\nLoading saved model weights...")
+    checkpoint = torch.load(weight_path, map_location=args.device)
+
+    # Use the edge_index that was saved in the checkpoint rather than
+    # reconstructing it — avoids mismatches from Jaccard threshold differences.
+    if "edge_index" in checkpoint:
+        edge_index = checkpoint["edge_index"].to(args.device)
+        n_edges = edge_index.shape[1] // 2
+        print(f"  edge_index loaded from checkpoint: {K} nodes, {n_edges} undirected edges")
+    else:
+        print("\nBuilding graph (edge_index not in checkpoint)...")
+        if args.graph_method == "jaccard":
+            if not args.pathway_gene_sets:
+                raise ValueError("--pathway_gene_sets required for jaccard")
+            with open(args.pathway_gene_sets) as f:
+                gene_sets = {k: set(v) for k, v in json.load(f).items()}
+            edge_index = build_jaccard_edge_index(
+                gene_sets, pw_names,
+                min_overlap=args.jaccard_min_overlap,
+                min_jaccard=args.jaccard_min_score,
+            )
+        elif args.graph_method == "score_correlation":
+            edge_index = build_score_correlation_edge_index(
+                pw_s[idx_tr], pw_names,
+                threshold=args.corr_threshold,
+                top_k=args.corr_top_k,
+            )
+        else:
+            edge_index = None
+        n_edges = edge_index.shape[1] // 2 if edge_index is not None else K * (K - 1) // 2
+        print(f"  {K} nodes, {n_edges} undirected edges")
+
     with open(hparam_path) as f:
         hparams = json.load(f)
 
@@ -223,7 +230,7 @@ def main():
         fully_connected=(args.graph_method == "fully_connected"),
         **model_kwargs,
     )
-    model.load_state_dict(torch.load(weight_path, map_location=args.device))
+    model.load_state_dict(checkpoint)
     model.eval()
     print(f"  Loaded: {weight_path}")
 
