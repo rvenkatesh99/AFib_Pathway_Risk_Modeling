@@ -92,11 +92,11 @@ plt.rcParams.update({
 CARDIAC_TISSUES = {
     "HAA": "Heart_Atrial_Appendage",
     "HLV": "Heart_Left_Ventricle",
-    "AC":  "Artery_Coronary",
 }
 CONTROL_TISSUES = {
+    "AC":  "Artery_Coronary",
+    "AA":  "Artery_Aorta",
     "WB":  "Whole_Blood",
-    "SK":  "Skin_Sun_Exposed",
 }
 ALL_TISSUE_FILTERS = {**CARDIAC_TISSUES, **CONTROL_TISSUES}
 
