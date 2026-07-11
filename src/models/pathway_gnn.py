@@ -210,7 +210,7 @@ class PathwayGNN(nn.Module):
             grads = activations.grad
             if grads is None:
                 raise RuntimeError("GradCAM: activations.grad is None — retain_grad() did not capture gradients")
-            scores = (grads * activations).mean(dim=-1).abs()  # (batch, K)
+            scores = F.relu((grads * activations).mean(dim=-1))  # (batch, K)
             return scores.detach()
 
         x_flat, batch_edge_index, batch_vec = self._build_batch_graph(pathway_features, edge_index)
@@ -234,7 +234,7 @@ class PathwayGNN(nn.Module):
         grads = activations.grad
         if grads is None:
             raise RuntimeError("GradCAM: activations.grad is None — retain_grad() did not capture gradients")
-        scores = (grads * activations).mean(dim=-1).abs()  # (batch*K,)
+        scores = F.relu((grads * activations).mean(dim=-1))  # (batch*K,)
         return scores.reshape(batch_size, K).detach()
 
     def get_node_embeddings(

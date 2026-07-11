@@ -167,6 +167,61 @@ def main():
     idx_va   = splits["idx_val"]
     idx_te   = splits["idx_test"]
 
+    # Determine K from the checkpoint's saved edge_index — this is the ground
+    # truth for how many pathways the model was trained on, regardless of what
+    # pathway_cols or graph_info say.
+    print("\nPeeking at checkpoint to determine training K...")
+    _ckpt_peek = torch.load(weight_path, map_location="cpu")
+    if "edge_index" in _ckpt_peek:
+        _k_from_ckpt = int(_ckpt_peek["edge_index"].max()) + 1
+        print(f"  K={_k_from_ckpt} (from checkpoint edge_index)")
+    else:
+        _k_from_ckpt = None
+        print("  edge_index not in checkpoint — will use graph_info or --top_k_pathways")
+
+    # Apply the same top-k pathway selection used during training.
+    # Priority: (1) graph_info.pathway_names if length matches checkpoint K,
+    #           (2) variance selection using checkpoint K,
+    #           (3) --top_k_pathways flag as last resort.
+    graph_info_path = os.path.join(args.results_dir, "graph_info.json")
+    _k_target = _k_from_ckpt
+    _used_saved_names = False
+    if os.path.exists(graph_info_path):
+        with open(graph_info_path) as f:
+            _gi = json.load(f)
+        _saved_names = _gi.get("pathway_names", [])
+        if _k_target and len(_saved_names) == _k_target:
+            _name_to_col = {n: i for i, n in enumerate(pw_names)}
+            _sel_idx = [_name_to_col[n] for n in _saved_names if n in _name_to_col]
+            if len(_sel_idx) == _k_target:
+                pw       = pw[:, _sel_idx] if pw.ndim == 2 else pw[:, _sel_idx, :]
+                pw_names = list(_saved_names)
+                _used_saved_names = True
+                print(f"  Restored {len(pw_names)} training-time pathway names from graph_info.json")
+
+    if not _used_saved_names and pw.shape[1] > (_k_target or args.top_k_pathways or pw.shape[1]):
+        _k = _k_target or args.top_k_pathways
+        # Inline rank-normalized variance selection (matches train_model.py logic)
+        _pw_tr = pw[idx_tr]
+        _raw = _pw_tr.var(axis=0)
+        if _raw.ndim == 2:
+            _raw = _raw.mean(axis=1)
+        _prefixes = np.array([n.split("__")[0] for n in pw_names])
+        _unique_px = np.unique(_prefixes)
+        if len(_unique_px) > 1:
+            _scores = np.zeros(len(pw_names))
+            for _px in _unique_px:
+                _mask = _prefixes == _px
+                _grp  = _raw[_mask]
+                _rnks = _grp.argsort().argsort().astype(float)
+                _scores[_mask] = _rnks / max(_mask.sum() - 1, 1)
+        else:
+            _scores = _raw
+        _top_idx  = np.argsort(-_scores)[:_k]
+        pw        = pw[:, _top_idx] if pw.ndim == 2 else pw[:, _top_idx, :]
+        pw_names  = [pw_names[i] for i in _top_idx]
+        print(f"  Applied top-{_k} variance selection to match training")
+
     K, T = pw.shape[1], (pw.shape[2] if pw.ndim == 3 else 1)
     C    = cov.shape[1]
     print(f"  K={K} pathways, T={T} tissues, C={C} covariates")
@@ -235,7 +290,7 @@ def main():
     print(f"  Loaded: {weight_path}")
 
     # ── Rerun GradCAM ─────────────────────────────────────────────────────────
-    print("\nRunning GradCAM attribution (abs() fix applied)...")
+    print("\nRunning GradCAM attribution...")
     ranking, per_sample_gradcam = compute_gradcam_pathway_ranking(
         model, test_loader, pw_names, device=args.device
     )
