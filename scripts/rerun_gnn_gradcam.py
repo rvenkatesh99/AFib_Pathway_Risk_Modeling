@@ -129,13 +129,44 @@ def main():
 
     # ── Load data ─────────────────────────────────────────────────────────────
     print("\nLoading data...")
-    pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te = load_data(
-        splits_dir=args.splits_dir,
-        pathway_cols_file=args.pathway_cols,
-        covariates_file=args.covariates_file,
-        prs_col=args.prs_col,
-        top_k_pathways=args.top_k_pathways,
+    config_path = os.path.join(args.splits_dir, "data_config.json")
+    splits_path = os.path.join(args.splits_dir, "splits.npz")
+    with open(config_path) as f:
+        config = json.load(f)
+
+    # Read pathway cols from file
+    with open(args.pathway_cols) as f:
+        pathway_cols = [line.strip() for line in f if line.strip()]
+
+    cov_path = args.covariates_file or config["covariates"]
+    pw, cov, labels, pw_names_all, cov_cols, _ = load_data(
+        config["pathway_matrix"],
+        cov_path,
+        config["label_col"],
+        config["covariate_cols"],
     )
+
+    # Append PRS column exactly as train_model.py does (--prs_col)
+    if args.prs_col is not None:
+        import pandas as pd
+        _cov_df = pd.read_csv(cov_path) if cov_path.endswith(".csv") else pd.read_parquet(cov_path)
+        if args.prs_col not in _cov_df.columns:
+            raise ValueError(f"--prs_col {args.prs_col!r} not found in {cov_path}")
+        prs_vals = _cov_df[args.prs_col].values.astype(np.float32).reshape(-1, 1)
+        cov      = np.concatenate([cov, prs_vals], axis=1)
+        cov_cols = list(cov_cols) + [args.prs_col]
+        print(f"  Appended PRS column '{args.prs_col}' (C now {cov.shape[1]})")
+
+    # Subset to requested pathway columns
+    idx_pw   = [pw_names_all.index(c) for c in pathway_cols]
+    pw       = pw[:, idx_pw] if pw.ndim == 2 else pw[:, idx_pw, :]
+    pw_names = pathway_cols
+
+    splits   = np.load(splits_path)
+    idx_tr   = splits["idx_train"]
+    idx_va   = splits["idx_val"]
+    idx_te   = splits["idx_test"]
+
     K, T = pw.shape[1], (pw.shape[2] if pw.ndim == 3 else 1)
     C    = cov.shape[1]
     print(f"  K={K} pathways, T={T} tissues, C={C} covariates")
