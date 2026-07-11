@@ -87,19 +87,24 @@ plt.rcParams.update({
 
 # Cardiac-relevant tissues and control tissues to query from AlphaGenome.
 # These map to AlphaGenome tissue/cell-type identifiers.
+# GTEx tissue name substrings used to filter tidy_scores output.
+# Matched against the 'gtex_tissue' column (case-insensitive contains).
 CARDIAC_TISSUES = {
-    "HAA": "heart_left_atrial_appendage",   # GTEx Heart - Left Atrial Appendage
-    "HLV": "heart_left_ventricle",          # GTEx Heart - Left Ventricle
-    "AC":  "artery_coronary",               # GTEx Artery - Coronary
+    "HAA": "Heart_Atrial_Appendage",
+    "HLV": "Heart_Left_Ventricle",
+    "AC":  "Artery_Coronary",
 }
 CONTROL_TISSUES = {
-    "WB":  "whole_blood",                   # GTEx Whole Blood (non-cardiac control)
-    "SK":  "skin_sun_exposed",              # Skin (distal control)
+    "WB":  "Whole_Blood",
+    "SK":  "Skin_Sun_Exposed",
 }
+ALL_TISSUE_FILTERS = {**CARDIAC_TISSUES, **CONTROL_TISSUES}
 
-# AlphaGenome track types to aggregate for regulatory effect score.
-# ATAC-seq and H3K27ac are the most informative for regulatory activity.
-REGULATORY_TRACKS = ["ATAC", "H3K27ac", "H3K4me3", "DNase"]
+# Output type used for tissue-specific scoring.
+# GTEx tissue rows in AlphaGenome output only contain RNA-seq (not chromatin).
+# RNA-seq delta scores measure predicted gene expression disruption — directly
+# aligned with the GReX-based model features.
+SCORE_OUTPUT_TYPE = "RNA_SEQ"
 
 
 def _save(fig, path):
@@ -128,6 +133,8 @@ def parse_args():
                         "skip the API calls and go straight to analysis.")
     p.add_argument("--max_variants_per_pathway", type=int, default=200,
                    help="Cap variants per pathway to limit API calls (take top by |gwas_beta|).")
+    p.add_argument("--api_key", default=None,
+                   help="AlphaGenome API key. If omitted, reads ALPHAGENOME_API_KEY env var.")
     return p.parse_args()
 
 
@@ -193,17 +200,13 @@ def load_variant_map(path, top_pathways, bottom_pathways,
 
 # ── AlphaGenome scoring ───────────────────────────────────────────────────────
 
-def score_variants_alphagenome(variants_df, tissues, out_dir):
+def score_variants_alphagenome(variants_df, tissues, out_dir, api_key=None):
     """
-    Call AlphaGenome to predict regulatory effect of each unique variant in
-    the requested tissues. Returns a DataFrame:
-      rsid  chrom  pos  ref  alt  tissue  delta_score
+    Call AlphaGenome to predict regulatory effect of each unique variant.
+    Returns a DataFrame: rsid  chrom  pos  ref  alt  tissue  delta_score
 
-    delta_score = mean |delta| across REGULATORY_TRACKS for that tissue,
-    representing the overall regulatory disruption magnitude.
-
-    Results are cached to {out_dir}/alphagenome_raw_scores.tsv to avoid
-    re-querying on re-runs.
+    delta_score = mean |raw_score| across REGULATORY_TRACKS for that tissue.
+    Results are cached to {out_dir}/alphagenome_raw_scores.tsv.
     """
     cache_path = os.path.join(out_dir, "alphagenome_raw_scores.tsv")
     if os.path.isfile(cache_path):
@@ -211,58 +214,78 @@ def score_variants_alphagenome(variants_df, tissues, out_dir):
         return pd.read_csv(cache_path, sep="\t")
 
     try:
-        import alphagenome  # noqa: F401
-        from alphagenome.models import dna_client
+        from alphagenome.models import dna_client, variant_scorers
+        from alphagenome.data.genome import Interval, Variant
     except ImportError:
         raise ImportError(
             "alphagenome package not found. Install with: pip install alphagenome\n"
             "Or provide --precomputed_scores to skip API calls."
         )
 
-    tissue_ids = {
-        t: CARDIAC_TISSUES.get(t) or CONTROL_TISSUES.get(t)
-        for t in tissues
-        if CARDIAC_TISSUES.get(t) or CONTROL_TISSUES.get(t)
-    }
+    key = api_key or os.environ.get("ALPHAGENOME_API_KEY")
+    if not key:
+        raise ValueError(
+            "AlphaGenome API key required. Pass --api_key or set ALPHAGENOME_API_KEY env var."
+        )
 
-    model = dna_client.DnaClient()
+    client = dna_client.create(api_key=key)
     unique_variants = (variants_df[["rsid", "chrom", "pos", "ref", "alt"]]
                        .drop_duplicates("rsid"))
 
-    print(f"  Scoring {len(unique_variants)} unique variants across "
-          f"{len(tissue_ids)} tissues via AlphaGenome...")
+    print(f"  Scoring {len(unique_variants)} unique variants via AlphaGenome...")
 
     rows = []
     for _, v in unique_variants.iterrows():
         try:
-            pred = model.predict_variant_effects(
-                chrom=str(v["chrom"]),
-                pos=int(v["pos"]),
-                ref=v["ref"],
-                alt=v["alt"],
+            chrom = f"chr{v['chrom']}" if not str(v["chrom"]).startswith("chr") else str(v["chrom"])
+            pos   = int(v["pos"])
+            # Interval centered on variant; AlphaGenome needs ~1 Mbp context
+            half = 524_288  # 1_048_576 / 2 — exact supported length
+            interval = Interval(chromosome=chrom, start=max(0, pos - half), end=pos + half)
+            variant  = Variant(
+                chromosome=chrom,
+                position=pos,
+                reference_bases=v["ref"],
+                alternate_bases=v["alt"],
+                name=str(v["rsid"]),
             )
-            for tissue_code, tissue_id in tissue_ids.items():
-                track_deltas = []
-                for track in REGULATORY_TRACKS:
-                    delta = pred.get_delta(tissue=tissue_id, track=track)
-                    if delta is not None:
-                        track_deltas.append(abs(float(delta)))
-                if track_deltas:
-                    rows.append({
-                        "rsid":        v["rsid"],
-                        "chrom":       v["chrom"],
-                        "pos":         v["pos"],
-                        "ref":         v["ref"],
-                        "alt":         v["alt"],
-                        "tissue":      tissue_code,
-                        "delta_score": np.mean(track_deltas),
-                    })
+            scores_ann = client.score_variant(interval, variant)
+            tidy = variant_scorers.tidy_scores(scores_ann)
+
+            # Filter to regulatory tracks and requested tissues
+            track_mask = tidy["track_name"].str.contains(
+                "|".join(REGULATORY_TRACKS), case=False, na=False
+            )
+            tidy = tidy[track_mask].copy()
+
+            tissue_col = next(
+                (c for c in tidy.columns if "gtex" in c.lower() or "tissue" in c.lower()), None
+            )
+            if tissue_col is None:
+                warnings.warn(f"No tissue column found in tidy_scores output for {v['rsid']}")
+                continue
+
+            rna_tidy = tidy[tidy["output_type"] == SCORE_OUTPUT_TYPE]
+            for tissue_code in tissues:
+                tissue_filter = ALL_TISSUE_FILTERS.get(tissue_code, "")
+                sub = rna_tidy[rna_tidy[tissue_col] == tissue_filter]
+                if sub.empty:
+                    continue
+                rows.append({
+                    "rsid":        v["rsid"],
+                    "chrom":       v["chrom"],
+                    "pos":         v["pos"],
+                    "ref":         v["ref"],
+                    "alt":         v["alt"],
+                    "tissue":      tissue_code,
+                    "delta_score": sub["raw_score"].abs().mean(),
+                })
         except Exception as e:
             warnings.warn(f"AlphaGenome failed for {v['rsid']}: {e}")
 
     scores_df = pd.DataFrame(rows)
     scores_df.to_csv(cache_path, sep="\t", index=False)
-    print(f"  Cached raw scores: {cache_path}")
+    print(f"  Cached {len(scores_df)} rows → {cache_path}")
     return scores_df
 
 
@@ -444,7 +467,8 @@ def main():
         print(f"Loading precomputed scores: {args.precomputed_scores}")
         scores_df = pd.read_csv(args.precomputed_scores, sep="\t")
     else:
-        scores_df = score_variants_alphagenome(variants_df, args.tissues, args.out_dir)
+        scores_df = score_variants_alphagenome(variants_df, args.tissues, args.out_dir,
+                                               api_key=args.api_key)
 
     if scores_df.empty:
         raise RuntimeError("No AlphaGenome scores produced — check API access and variant input.")
