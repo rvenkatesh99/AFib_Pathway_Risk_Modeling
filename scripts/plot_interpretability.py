@@ -40,40 +40,38 @@ MODEL_ORDER = [
     "gnn_jaccard", "gnn_score_correlation", "gnn_string", "gnn_fully_connected",
 ]
 
-# Tableau-10 palette — vivid, perceptually distinct
-_T10 = [
-    "#4E79A7",  # blue
-    "#F28E2B",  # orange
-    "#E15759",  # red
-    "#76B7B2",  # teal
-    "#59A14F",  # green
-    "#EDC948",  # yellow
-    "#B07AA1",  # purple
-    "#FF9DA7",  # pink
-    "#9C755F",  # brown
-    "#BAB0AC",  # gray
+# Okabe-Ito colorblind-safe palette
+_OI = [
+    "#0072B2",  # blue
+    "#E69F00",  # orange
+    "#56B4E9",  # sky blue
+    "#009E73",  # bluish green
+    "#CC79A7",  # reddish purple
+    "#D55E00",  # vermillion
+    "#F0E442",  # yellow
+    "#999999",  # gray
 ]
 
 MODEL_COLORS = {
-    # Linear models — blues (simple, regularized)
-    "l1_logistic":            "#4E79A7",
-    "elasticnet":             "#76B7B2",
+    # Linear models — blues
+    "l1_logistic":            "#0072B2",
+    "elasticnet":             "#56B4E9",
     # Tree
-    "random_forest":          "#F28E2B",
-    # Deep learning — greens/purples
-    "global_attention":       "#59A14F",
-    "transformer":            "#B07AA1",
-    # GNN family — reds (distinct from all above)
-    "gnn":                    "#E15759",
-    "gnn_jaccard":            "#E15759",
-    "gnn_score_correlation":  "#FF9DA7",
-    "gnn_string":             "#9C755F",
-    "gnn_fully_connected":    "#EDC948",
+    "random_forest":          "#E69F00",
+    # Deep learning
+    "global_attention":       "#009E73",
+    "transformer":            "#CC79A7",
+    # GNN family — vermillion tones (distinct from bluish green above)
+    "gnn":                    "#D55E00",
+    "gnn_jaccard":            "#D55E00",
+    "gnn_score_correlation":  "#E69F00",
+    "gnn_string":             "#999999",
+    "gnn_fully_connected":    "#F0E442",
 }
 
-# Shared colormaps
-_CMAP_SEQ = sns.cubehelix_palette(start=.5, rot=-.75, as_cmap=True)   # sequential
-_CMAP_DIV = sns.diverging_palette(220, 20, as_cmap=True)              # diverging
+# Shared colormaps — lighter, publication-standard
+_CMAP_SEQ = "YlOrRd"                                        # sequential: light yellow → dark red
+_CMAP_DIV = "RdBu_r"                                        # diverging: blue–white–red
 
 
 # Logical display order for feature set rows (actual names in metrics CSV).
