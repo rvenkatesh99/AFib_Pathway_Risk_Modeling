@@ -347,7 +347,7 @@ def plot_violin(pathway_scores, tissues, out_dir):
                              figsize=(len(tissue_order) * 2.2, 4),
                              sharey=True, squeeze=False)
 
-    colors = {"top": "#2166ac", "bottom": "#d73027"}
+    colors = {"top": "#0072B2", "bottom": "#E69F00"}
 
     for ax, tissue in zip(axes[0], tissue_order):
         sub = pathway_scores[pathway_scores["tissue"] == tissue]
@@ -395,7 +395,7 @@ def plot_scatter(pathway_scores, ranking, out_dir, tissue="HAA"):
 
     fig, ax = plt.subplots(figsize=(5, 4))
     scatter = ax.scatter(sub["rank"], sub["mean_delta"],
-                         c=sub["tier"].map({"top": "#2166ac", "bottom": "#d73027"}),
+                         c=sub["tier"].map({"top": "#0072B2", "bottom": "#E69F00"}),
                          s=20, alpha=0.7, linewidths=0)
     ax.set_xlabel("Pathway importance rank (1 = highest)")
     ax.set_ylabel(f"Mean AlphaGenome delta score ({tissue})")
@@ -407,7 +407,7 @@ def plot_scatter(pathway_scores, ranking, out_dir, tissue="HAA"):
     handles = [
         plt.Line2D([0], [0], marker="o", color="w",
                    markerfacecolor=c, markersize=6, label=t)
-        for t, c in [("Top pathways", "#2166ac"), ("Bottom pathways", "#d73027")]
+        for t, c in [("Top pathways", "#0072B2"), ("Bottom pathways", "#E69F00")]
     ]
     ax.legend(handles=handles)
     _save(fig, os.path.join(out_dir, f"02_scatter_rank_vs_delta_{tissue}.png"))
@@ -422,7 +422,7 @@ def plot_summary_bar(test_df, out_dir):
         return
 
     cardiac_mask = test_df["tissue"].isin(CARDIAC_TISSUES)
-    colors = ["#2166ac" if c else "#aaaaaa" for c in cardiac_mask]
+    colors = ["#0072B2" if c else "#999999" for c in cardiac_mask]
 
     fig, ax = plt.subplots(figsize=(max(3.5, len(test_df) * 0.8), 3.5))
     y = -np.log10(test_df["fdr"].clip(lower=1e-10))

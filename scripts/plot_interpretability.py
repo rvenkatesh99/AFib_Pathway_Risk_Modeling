@@ -30,6 +30,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import seaborn as sns
+from matplotlib.colors import LinearSegmentedColormap
 from sklearn.metrics import roc_curve, auc, precision_recall_curve, average_precision_score
 
 # ── Shared style ──────────────────────────────────────────────────────────────
@@ -69,9 +70,15 @@ MODEL_COLORS = {
     "gnn_fully_connected":    "#F0E442",
 }
 
-# Shared colormaps — lighter, publication-standard
-_CMAP_SEQ = "YlOrRd"                                        # sequential: light yellow → dark red
-_CMAP_DIV = "RdBu_r"                                        # diverging: blue–white–red
+# Shared colormaps — matches gnn_interpretability.ipynb and transformer_interpretability.ipynb
+_PLASMA_DARK_FACTOR = 0.78
+_plasma_dark = LinearSegmentedColormap.from_list(
+    "plasma_dark",
+    [(*[c * _PLASMA_DARK_FACTOR for c in plt.colormaps["plasma"](v)[:3]], 1.0)
+     for v in np.linspace(0, 1, 256)],
+)
+_CMAP_SEQ = _plasma_dark   # sequential: dark plasma
+_CMAP_DIV = "RdBu_r"       # diverging: blue–white–red
 
 
 # Logical display order for feature set rows (actual names in metrics CSV).
@@ -361,7 +368,7 @@ def plot_gnn_table(metrics_df, topology_df, out_path):
         ax2 = axes[1]
         vals = pivot_edges.values.astype(float)
         vmax_e = np.nanmax(vals) if not np.all(np.isnan(vals)) else 1
-        im2 = ax2.imshow(vals, aspect="auto", cmap="Blues", vmin=0, vmax=vmax_e)
+        im2 = ax2.imshow(vals, aspect="auto", cmap=_plasma_dark, vmin=0, vmax=vmax_e)
         ax2.set_xticks(range(len(gnn_methods)))
         ax2.set_xticklabels([m.replace("_", "\n") for m in gnn_methods])
         ax2.set_yticks(range(len(feature_sets)))
@@ -680,7 +687,7 @@ def plot_delong_heatmap(delong_df, feature_set, out_path):
     with np.errstate(divide="ignore"):
         log_mat = np.where(np.isnan(mat), np.nan, -np.log10(np.clip(mat, 1e-4, 1.0)))
 
-    im = ax.imshow(log_mat, aspect="auto", cmap="Blues", vmin=0, vmax=4)
+    im = ax.imshow(log_mat, aspect="auto", cmap=_plasma_dark, vmin=0, vmax=4)
 
     labels = [m.replace("_", "\n") for m in models]
     ax.set_xticks(range(n)); ax.set_xticklabels(labels)
