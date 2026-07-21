@@ -116,8 +116,19 @@ def main():
     parser.add_argument("--corr_threshold",      type=float, default=0.0)
     parser.add_argument("--corr_top_k",          type=int,   default=50)
     parser.add_argument("--top_k_pathways",      type=int,   default=500)
-    parser.add_argument("--device",              default="cpu")
+    parser.add_argument("--device",              default=None,
+                        help="PyTorch device (e.g. 'cuda', 'mps', 'cpu'). "
+                             "Auto-detects CUDA → MPS → CPU when omitted.")
     args = parser.parse_args()
+
+    if args.device is None:
+        if torch.cuda.is_available():
+            args.device = "cuda"
+        elif torch.backends.mps.is_available():
+            args.device = "mps"
+        else:
+            args.device = "cpu"
+    print(f"Device: {args.device}")
 
     weight_path = os.path.join(args.results_dir, "gnn.pt")
     hparam_path = os.path.join(args.results_dir, "best_hparams.json")

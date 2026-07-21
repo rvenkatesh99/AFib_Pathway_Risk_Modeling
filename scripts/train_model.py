@@ -153,6 +153,9 @@ def parse_args():
                    help="Criterion for --top_k_pathways: 'variance' (unsupervised, default) "
                         "or 'auroc' (univariate AUROC on training set).")
     p.add_argument("--bootstrap_iters", type=int, default=1000)
+    p.add_argument("--device", default=None,
+                   help="PyTorch device string (e.g. 'cuda', 'cuda:1', 'mps', 'cpu'). "
+                        "Auto-detects CUDA → MPS → CPU when omitted.")
     return p.parse_args()
 
 
@@ -480,6 +483,7 @@ def run_neural(args, model_cls, model_kwargs, train_kwargs,
         batch_size=bs,
     )
 
+    device = args.device
     if args.tune:
         grid = HPARAM_GRIDS[args.model]
         candidates = [{**model_kwargs, **dict(zip(grid, v))}
@@ -491,7 +495,7 @@ def run_neural(args, model_cls, model_kwargs, train_kwargs,
             train_loader=train_loader,
             val_loader=val_loader,
             train_labels=labels[idx_tr],
-            device="cpu",
+            device=device,
             **TUNE_CFG,
         )
         best_hparams = {**{k: v for k, v in best_model_kw.items() if k not in model_kwargs},
@@ -509,14 +513,14 @@ def run_neural(args, model_cls, model_kwargs, train_kwargs,
     model, _ = train(
         model, train_loader, val_loader, labels[idx_tr],
         n_epochs=TRAIN_CFG["n_epochs"], patience=TRAIN_CFG["patience"],
-        device="cpu", **best_train_kw,
+        device=device, **best_train_kw,
     )
     torch.save(model.state_dict(), os.path.join(out_dir, weight_file))
 
     # Platt scaling: calibrate probabilities to true prevalence using val set
     # (WeightedRandomSampler trains on balanced batches → raw sigmoid overestimates P(Y=1))
-    platt_scaler = fit_platt_scaler(model, val_loader, device="cpu")
-    probs, _ = predict_calibrated(model, test_loader, device="cpu", platt_scaler=platt_scaler)
+    platt_scaler = fit_platt_scaler(model, val_loader, device=device)
+    probs, _ = predict_calibrated(model, test_loader, device=device, platt_scaler=platt_scaler)
 
     ranking, extra = post_fn(model, test_loader, pw_names, out_dir) if post_fn else ({}, None)
     save_outputs(out_dir, probs, labels[idx_te], ranking, best_hparams,
@@ -539,7 +543,8 @@ def run_global_attention(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_
         weights = model.get_attention_weights()
         if weights is not None:
             np.save(os.path.join(out_dir, "attention_weights.npy"), weights.detach().cpu().numpy())
-        cov_ranking = compute_gradient_covariate_importance(model, test_loader, cov_cols)
+        cov_ranking = compute_gradient_covariate_importance(model, test_loader, cov_cols,
+                                                            device=args.device)
         return ranking, cov_ranking
 
     run_neural(args, GlobalPathwayAttentionModel, fixed, {},
@@ -552,13 +557,14 @@ def run_transformer(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, i
     fixed = dict(n_pathways=K, pathway_input_dim=T, covariate_dim=C, n_layers=2)
 
     def post(model, test_loader, pw_names, out_dir):
-        mean_attn = model.compute_mean_attention(test_loader, device="cpu")
+        mean_attn = model.compute_mean_attention(test_loader, device=args.device)
         if mean_attn is None:
             return {}, None
         np.save(os.path.join(out_dir, "mean_attention.npy"), mean_attn.numpy())
         ranking = {name: float(mean_attn[-1, :, 0, i + 1].mean().item())
                    for i, name in enumerate(pw_names)}
-        cov_ranking = compute_gradient_covariate_importance(model, test_loader, cov_cols)
+        cov_ranking = compute_gradient_covariate_importance(model, test_loader, cov_cols,
+                                                            device=args.device)
         return ranking, cov_ranking
 
     run_neural(args, PathwayTransformer, fixed, {},
@@ -631,10 +637,10 @@ def run_gnn(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, o
 
     def post(model, test_loader, pw_names, out_dir):
         ranking, per_sample_gradcam = compute_gradcam_pathway_ranking(
-            model, test_loader, pw_names, device="cpu"
+            model, test_loader, pw_names, device=args.device
         )
         np.save(os.path.join(out_dir, "gradcam_scores.npy"), per_sample_gradcam)
-        node_embeddings = compute_node_embeddings(model, test_loader, device="cpu")
+        node_embeddings = compute_node_embeddings(model, test_loader, device=args.device)
         np.save(os.path.join(out_dir, "node_embeddings.npy"), node_embeddings)
         return ranking, None
 
@@ -677,8 +683,20 @@ def _done(label, model_name, t0):
     print(f"[{model_name}] {label} done ({_fmt(elapsed)})", flush=True)
 
 
+def _resolve_device(requested: str | None) -> str:
+    if requested is not None:
+        return requested
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
 def main():
     args = parse_args()
+    args.device = _resolve_device(args.device)
+    print(f"Device: {args.device}")
     splits_dir = args.splits_dir or args.results_dir
     torch.manual_seed(42)
     np.random.seed(42)
