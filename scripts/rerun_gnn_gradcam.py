@@ -1,44 +1,3 @@
-"""
-Rerun GNN GradCAM attribution only — no retraining.
-
-Loads saved gnn.pt weights from a completed run, reconstructs the graph and
-test DataLoader, then regenerates:
-  - ranking.json          (pathway GradCAM scores)
-  - gradcam_scores.npy    (per-sample scores, shape [N_test, K])
-  - node_embeddings.npy   (per-sample node embeddings)
-
-ranking.json is overwritten in-place, so the existing metrics.json / probs_test.npy
-/ best_hparams.json are untouched — AUROC numbers do not change.
-
-Usage (example — jaccard, gwas_prs):
-  python scripts/rerun_gnn_gradcam.py \
-    --results_dir AF_PATHWAY_SCORES/PATHWAY_MODELING/gwas_prs_covs_jaccard/gnn/ \
-    --splits_dir  AF_PATHWAY_SCORES/PATHWAY_MODELING/splits/ \
-    --pathway_cols data/pathway_cols_gwas.txt \
-    --covariates_file AF_PATHWAY_SCORES/PATHWAY_MODELING/Feature_Files/covariates_PRS.csv \
-    --prs_col PRS_std \
-    --graph_method jaccard \
-    --pathway_gene_sets AF_PATHWAY_SCORES/GNN_PATHWAY/pathway_gene_sets.json
-
-  python scripts/rerun_gnn_gradcam.py \
-    --results_dir AF_PATHWAY_SCORES/PATHWAY_MODELING/gwas_grex_HAA_HLV_prs_covs_jaccard/gnn/ \
-    --splits_dir  AF_PATHWAY_SCORES/PATHWAY_MODELING/splits/ \
-    --pathway_cols data/pathway_cols_gwas_grex_HAA_HLV.txt \
-    --covariates_file AF_PATHWAY_SCORES/PATHWAY_MODELING/Feature_Files/covariates_PRS.csv \
-    --prs_col PRS_std \
-    --graph_method jaccard \
-    --pathway_gene_sets AF_PATHWAY_SCORES/GNN_PATHWAY/pathway_gene_sets.json
-
-  python scripts/rerun_gnn_gradcam.py \
-    --results_dir AF_PATHWAY_SCORES/PATHWAY_MODELING/gwas_grex_HAA_HLV_AA_prs_covs_jaccard/gnn/ \
-    --splits_dir  AF_PATHWAY_SCORES/PATHWAY_MODELING/splits/ \
-    --pathway_cols data/pathway_cols_gwas_grex_HAA_HLV_AA.txt \
-    --covariates_file AF_PATHWAY_SCORES/PATHWAY_MODELING/Feature_Files/covariates_PRS.csv \
-    --prs_col PRS_std \
-    --graph_method jaccard \
-    --pathway_gene_sets AF_PATHWAY_SCORES/GNN_PATHWAY/pathway_gene_sets.json
-"""
-
 import argparse
 import json
 import os
@@ -59,9 +18,6 @@ from src.models.pathway_gnn import (
 )
 from src.interpretability import compute_gradcam_pathway_ranking, compute_node_embeddings
 
-
-# ── helpers ───────────────────────────────────────────────────────────────────
-
 class _NumpyEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, np.floating):
@@ -71,7 +27,6 @@ class _NumpyEncoder(json.JSONEncoder):
         if isinstance(obj, np.ndarray):
             return obj.tolist()
         return super().default(obj)
-
 
 def _scale_splits(pw, cov, idx_tr, idx_va, idx_te):
     pw_scaled  = pw.copy().astype(float)
@@ -90,9 +45,6 @@ def _scale_splits(pw, cov, idx_tr, idx_va, idx_te):
             pw_scaled[idx] = pw_scaler.transform(pw_2d[idx]).reshape(-1, *orig_shape)
 
     return pw_scaled, cov_scaled
-
-
-# ── main ──────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(description="Rerun GNN GradCAM without retraining.")
@@ -117,8 +69,7 @@ def main():
     parser.add_argument("--corr_top_k",          type=int,   default=50)
     parser.add_argument("--top_k_pathways",      type=int,   default=500)
     parser.add_argument("--device",              default=None,
-                        help="PyTorch device (e.g. 'cuda', 'mps', 'cpu'). "
-                             "Auto-detects CUDA → MPS → CPU when omitted.")
+                        help="PyTorch device (e.g. 'cuda', 'mps', 'cpu'). Auto-detects when omitted.")
     args = parser.parse_args()
 
     if args.device is None:
@@ -128,7 +79,6 @@ def main():
             args.device = "mps"
         else:
             args.device = "cpu"
-    print(f"Device: {args.device}")
 
     weight_path = os.path.join(args.results_dir, "gnn.pt")
     hparam_path = os.path.join(args.results_dir, "best_hparams.json")
@@ -138,7 +88,6 @@ def main():
     print(f"Results dir  : {args.results_dir}")
     print(f"Graph method : {args.graph_method}")
 
-    # ── Load data ─────────────────────────────────────────────────────────────
     print("\nLoading data...")
     config_path = os.path.join(args.splits_dir, "data_config.json")
     splits_path = os.path.join(args.splits_dir, "splits.npz")
@@ -247,7 +196,6 @@ def main():
         batch_size=32,
     )
 
-    # ── Load checkpoint and extract saved edge_index ──────────────────────────
     print("\nLoading saved model weights...")
     checkpoint = torch.load(weight_path, map_location=args.device)
 
@@ -300,7 +248,6 @@ def main():
     model.eval()
     print(f"  Loaded: {weight_path}")
 
-    # ── Rerun GradCAM ─────────────────────────────────────────────────────────
     print("\nRunning GradCAM attribution...")
     ranking, per_sample_gradcam = compute_gradcam_pathway_ranking(
         model, test_loader, pw_names, device=args.device
@@ -313,7 +260,6 @@ def main():
     np.save(os.path.join(args.results_dir, "node_embeddings.npy"), node_embeddings)
     print(f"  node_embeddings.npy: shape {node_embeddings.shape}")
 
-    # ── Write ranking.json with only the K pathway scores ────────────────────
     # Do NOT merge with any old ranking.json — it may contain stale scores for
     # pathways outside the trained K (from a previous broken rerun).
     ranking_path = os.path.join(args.results_dir, "ranking.json")
@@ -321,7 +267,6 @@ def main():
         json.dump(ranking, f, indent=2, cls=_NumpyEncoder)
     print(f"\nWrote ranking.json: {len(ranking)} pathways")
 
-    # ── Update graph_info.json with correct pathway names and n_nodes ─────────
     graph_info_path = os.path.join(args.results_dir, "graph_info.json")
     if os.path.exists(graph_info_path):
         with open(graph_info_path) as f:
@@ -338,7 +283,6 @@ def main():
         print(f"  {score:.6f}  {name}")
 
     print(f"\nDone. Outputs written to: {args.results_dir}")
-
 
 if __name__ == "__main__":
     main()

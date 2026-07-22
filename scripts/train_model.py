@@ -1,25 +1,3 @@
-"""
-Train a single model. Run one process per model, then aggregate_results.py.
-
-Usage:
-  python scripts/train_model.py \
-      --model {covariates_logistic,l1_logistic,elasticnet,unregularized_logistic,random_forest,global_attention,transformer,gnn} \
-      --results_dir results/ \
-      [--tune] \
-      [--prs_col prs] \
-      [--string_edges data/string_edges.csv --pathway_gene_sets data/pathway_gene_sets.json]
-
-Reads:  results_dir/splits.npz and results_dir/data_config.json (from prepare_splits.py)
-Writes: results_dir/<model>/
-          probs_test.npy, labels_test.npy  — predictions on the held-out test set
-          metrics.json                     — AUROC, AUPRC, F1, Brier + bootstrap 95% CIs
-          ranking.json                     — pathway importance scores
-          best_hparams.json                — chosen hyperparameters
-          hparam_search.json               — full grid results (only when --tune)
-          <model>.pkl or <model>.pt        — saved model weights
-          mean_attention.npy               — transformer only
-"""
-
 import argparse
 import itertools
 import json
@@ -51,10 +29,6 @@ from src.interpretability import (
     compute_gradcam_pathway_ranking, compute_node_embeddings, compute_gradient_covariate_importance,
 )
 
-# ── Hyperparameter grids (Cartesian product of each list) ────────────────────
-# Training params (lr, weight_decay) are separated from model constructor params
-# automatically in tune_hyperparameters().
-
 HPARAM_GRIDS = {
     "random_forest": {
         "n_estimators": [500],
@@ -82,7 +56,6 @@ HPARAM_GRIDS = {
     },
 }
 
-# Default hyperparameters used when --tune is not set.
 DEFAULTS = {
     "l1_logistic":         {},
     "elasticnet":          {},
@@ -93,83 +66,40 @@ DEFAULTS = {
     "gnn":                 {"embed_dim": 128, "dropout": 0.1, "lr": 1e-3, "weight_decay": 1e-4},
 }
 
-# Final training settings (not tuned).
 TRAIN_CFG = dict(n_epochs=200, patience=15, batch_size=256)
 TUNE_CFG  = dict(n_epochs=60,  patience=8)
-
 
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--model", required=True, choices=list(DEFAULTS))
-    p.add_argument("--results_dir", default="results/",
-                   help="Directory where this run's outputs are written (model subdir created inside).")
-    p.add_argument("--splits_dir", default=None,
-                   help="Directory containing splits.npz and data_config.json from prepare_splits.py. "
-                        "Defaults to --results_dir when not set (single-experiment mode).")
+    p.add_argument("--results_dir", default="results/")
+    p.add_argument("--splits_dir", default=None)
     p.add_argument("--tune", action="store_true")
-    p.add_argument("--prs_col", default=None,
-                   help="Column name for PRS in the covariates file. "
-                        "If provided it is included as a covariate by default. "
-                        "Omit to exclude PRS from the model.")
-    p.add_argument("--pathway_cols", nargs="+", default=None,
-                   help="Pathway matrix columns to use as structured pathway input. "
-                        "Accepts explicit column names or a path to a text file (one name per line). "
-                        "Default: all pathway columns. Pass an empty string or omit to run "
-                        "covariates-only (no pathway branch).")
-    p.add_argument("--covariate_cols", nargs="+", default=None,
-                   help="Covariate columns to pass through the flat covariate encoder. "
-                        "Default: all columns in the covariates file except the label. "
-                        "PRS is included here (not in the pathway matrix) when --prs_col is set.")
-    p.add_argument("--covariates_file", default=None,
-                   help="Override the covariates CSV path from data_config.json. "
-                        "Must have the same row order as the original covariates file.")
+    p.add_argument("--prs_col", default=None)
+    p.add_argument("--pathway_cols", nargs="+", default=None)
+    p.add_argument("--covariate_cols", nargs="+", default=None)
+    p.add_argument("--covariates_file", default=None)
     p.add_argument("--graph_method", default="jaccard",
-                   choices=["jaccard", "score_correlation", "string", "fully_connected"],
-                   help="GNN only. How to construct pathway graph edges.")
-    p.add_argument("--string_edges", default=None,
-                   help="GNN + graph_method=string: CSV with columns gene1,gene2,confidence (HGNC symbols).")
-    p.add_argument("--string_min_shared_genes", type=int, default=5,
-                   help="GNN + graph_method=string: minimum shared STRING-interacting gene pairs for a pathway edge. "
-                        "Higher values = sparser graph, lower memory. Default 5.")
-    p.add_argument("--string_min_confidence", type=int, default=700,
-                   help="GNN + graph_method=string: minimum STRING confidence score (0-1000). "
-                        "400=medium, 700=high, 900=very high. Default 700.")
-    p.add_argument("--pathway_gene_sets", default=None,
-                   help="GNN + graph_method in {jaccard,string}: JSON mapping pathway name → list of gene symbols.")
-    p.add_argument("--jaccard_min_overlap", type=int, default=3,
-                   help="GNN + graph_method=jaccard: minimum shared genes for an edge.")
-    p.add_argument("--jaccard_min_score", type=float, default=0.1,
-                   help="GNN + graph_method=jaccard: minimum Jaccard similarity for an edge.")
-    p.add_argument("--corr_threshold", type=float, default=0.3,
-                   help="GNN + graph_method=score_correlation: absolute Pearson threshold for an edge (ignored if --corr_top_k is set).")
-    p.add_argument("--corr_top_k", type=int, default=None,
-                   help="GNN + graph_method=score_correlation: K-NN graph — each node keeps its top-K correlated neighbors. "
-                        "Bounds edge count at O(K*nodes); recommended over --corr_threshold for large feature sets.")
-    p.add_argument("--top_k_pathways", type=int, default=None,
-                   help="Keep only the top-K pathways by the feature selection method. "
-                        "Applied before any model is fit. Omit to use all pathways.")
-    p.add_argument("--feature_selection_method", default="variance",
-                   choices=["variance", "auroc"],
-                   help="Criterion for --top_k_pathways: 'variance' (unsupervised, default) "
-                        "or 'auroc' (univariate AUROC on training set).")
+                   choices=["jaccard", "score_correlation", "string", "fully_connected"])
+    p.add_argument("--string_edges", default=None)
+    p.add_argument("--string_min_shared_genes", type=int, default=5)
+    p.add_argument("--string_min_confidence", type=int, default=700)
+    p.add_argument("--pathway_gene_sets", default=None)
+    p.add_argument("--jaccard_min_overlap", type=int, default=3)
+    p.add_argument("--jaccard_min_score", type=float, default=0.1)
+    p.add_argument("--corr_threshold", type=float, default=0.3)
+    p.add_argument("--corr_top_k", type=int, default=None)
+    p.add_argument("--top_k_pathways", type=int, default=None)
+    p.add_argument("--feature_selection_method", default="variance", choices=["variance", "auroc"])
     p.add_argument("--bootstrap_iters", type=int, default=1000)
-    p.add_argument("--device", default=None,
-                   help="PyTorch device string (e.g. 'cuda', 'cuda:1', 'mps', 'cpu'). "
-                        "Auto-detects CUDA → MPS → CPU when omitted.")
+    p.add_argument("--device", default=None)
     return p.parse_args()
-
 
 def _get_all_pw_names(splits_dir):
     with open(os.path.join(splits_dir, "data_config.json")) as f:
         return json.load(f)["pathway_names"]
 
-
 def _resolve_pathway_cols(args, all_pw_names):
-    """
-    Resolve --pathway_cols to a list of column names.
-    Returns an empty list for covariates-only runs (K=0).
-    Accepts explicit column names or a single path to a text file.
-    """
     if args.pathway_cols is None:
         return all_pw_names                          # default: all pathways
 
@@ -189,9 +119,6 @@ def _resolve_pathway_cols(args, all_pw_names):
     if unknown:
         raise ValueError(f"Unknown pathway columns: {sorted(unknown)}")
     return requested
-
-
-# ── Data loading ──────────────────────────────────────────────────────────────
 
 def load_splits(splits_dir, pathway_cols=None, covariate_cols=None, covariates_file=None):
     config_path = os.path.join(splits_dir, "data_config.json")
@@ -219,28 +146,18 @@ def load_splits(splits_dir, pathway_cols=None, covariate_cols=None, covariates_f
     splits = np.load(splits_path)
     return pw, cov, labels, pw_names, cov_cols_all, splits["idx_train"], splits["idx_val"], splits["idx_test"]
 
-
 def _select_top_k_pathways(pw, pw_names, labels, idx_tr, k, method="variance"):
-    """Keep top-k pathways by variance (unsupervised) or univariate AUROC (training set only).
-
-    For T>1 matrices, variance is averaged across tissue dimensions per pathway.
-    When multiple feature types are present (e.g. gwas__ + grex_HAA__), variances are
-    rank-normalized within each type before combining so no type dominates due to scale.
-    """
     pw_tr = pw[idx_tr]
 
     if method == "variance":
-        # Average variance across tissue dims for T>1
-        raw = pw_tr.var(axis=0)                      # (K,) or (K, T)
+        raw = pw_tr.var(axis=0)
         if raw.ndim == 2:
-            raw = raw.mean(axis=1)                   # (K,)
+            raw = raw.mean(axis=1)
 
-        # Detect feature type groups from prefix before first '__'
         prefixes = np.array([n.split("__")[0] for n in pw_names])
         unique_prefixes = np.unique(prefixes)
 
         if len(unique_prefixes) > 1:
-            # Rank-normalize within each feature type (0=lowest, 1=highest variance)
             scores = np.zeros(len(pw_names))
             for prefix in unique_prefixes:
                 mask = prefixes == prefix
@@ -267,13 +184,11 @@ def _select_top_k_pathways(pw, pw_names, labels, idx_tr, k, method="variance"):
     pw_sel  = pw[:, top_idx] if pw.ndim == 2 else pw[:, top_idx, :]
     names_sel = [pw_names[i] for i in top_idx]
 
-    # Report per-type counts when multiple feature types present
     prefixes_sel = np.array([n.split("__")[0] for n in names_sel])
     type_counts = {p: (prefixes_sel == p).sum() for p in np.unique(prefixes_sel)}
     type_str = ", ".join(f"{p}={c}" for p, c in type_counts.items())
     print(f"  [feature selection] kept {k}/{len(pw_names)} pathways by {label} ({type_str})")
     return pw_sel, names_sel
-
 
 def _make_loaders(pw, cov, labels, idx_tr, idx_va, idx_te):
     return make_loaders(
@@ -283,11 +198,7 @@ def _make_loaders(pw, cov, labels, idx_tr, idx_va, idx_te):
         batch_size=TRAIN_CFG["batch_size"],
     )
 
-
-# ── Output saving ─────────────────────────────────────────────────────────────
-
 class _NumpyEncoder(json.JSONEncoder):
-    """Convert numpy scalars/arrays to plain Python types for JSON serialization."""
     def default(self, obj):
         if isinstance(obj, np.integer):
             return int(obj)
@@ -296,7 +207,6 @@ class _NumpyEncoder(json.JSONEncoder):
         if isinstance(obj, np.ndarray):
             return obj.tolist()
         return super().default(obj)
-
 
 def save_outputs(out_dir, probs, labels_test, ranking, best_hparams,
                  search_results=None, bootstrap_iters=1000, covariate_ranking=None):
@@ -323,9 +233,6 @@ def save_outputs(out_dir, probs, labels_test, ranking, best_hparams,
     print(f"  AUROC={auroc:.4f} [{ci_auroc['ci_lower']:.4f}, {ci_auroc['ci_upper']:.4f}]  "
           f"AUPRC={metrics['auprc']:.4f}  Brier={metrics['brier_score']:.4f}")
 
-
-# ── Sklearn grid search helper ────────────────────────────────────────────────
-
 def sklearn_grid_search(build_fn, grid, train_X, train_y, val_X, val_y):
     from sklearn.metrics import roc_auc_score
     candidates = [dict(zip(grid, v)) for v in itertools.product(*grid.values())]
@@ -342,13 +249,7 @@ def sklearn_grid_search(build_fn, grid, train_X, train_y, val_X, val_y):
     print(f"  Best: {best_params} (val_auroc={best_auroc:.4f})")
     return best_params, results
 
-
-# ── Sklearn runners ───────────────────────────────────────────────────────────
-
-
 def _platt_scale_sklearn(build_fn, X_tr, y_tr, X_va, y_va):
-    """Fit a Platt scaler on val predictions from a train-only model.
-    Returns the scaler; caller applies it to test predictions from the full model."""
     from sklearn.linear_model import LogisticRegression as _LR
     cal_model = build_fn()
     cal_model.fit(X_tr, y_tr)
@@ -359,25 +260,20 @@ def _platt_scale_sklearn(build_fn, X_tr, y_tr, X_va, y_va):
     scaler.fit(val_logits.reshape(-1, 1), y_va)
     return scaler
 
-
 def _apply_platt(scaler, raw_probs):
     eps = 1e-7
     logits = np.log(np.clip(raw_probs, eps, 1 - eps) / (1 - np.clip(raw_probs, eps, 1 - eps)))
     return scaler.predict_proba(logits.reshape(-1, 1))[:, 1]
 
-
 def _run_sklearn_logistic(args, build_fn, model_name,
                           pw, cov, labels, pw_names, cov_cols,
                           idx_tr, idx_va, idx_te, out_dir, hparams_fn=None):
-    """Shared scaffold for all sklearn logistic runners."""
     T = pw.shape[2] if pw.ndim == 3 else 1
     splits = [("tr", idx_tr), ("va", idx_va), ("te", idx_te)]
     X = {s: np.concatenate([flatten_pathway_matrix(pw[i]), cov[i]], axis=1) for s, i in splits}
 
-    # Fit Platt scaler on val predictions from a train-only model (unbiased calibration).
     platt = _platt_scale_sklearn(build_fn, X["tr"], labels[idx_tr], X["va"], labels[idx_va])
 
-    # Refit final model on train+val for maximum data, then calibrate test predictions.
     final_X = np.concatenate([X["tr"], X["va"]])
     final_y = np.concatenate([labels[idx_tr], labels[idx_va]])
     model = build_fn()
@@ -389,7 +285,6 @@ def _run_sklearn_logistic(args, build_fn, model_name,
     save_outputs(out_dir, probs, labels[idx_te], ranking, hparams, None, args.bootstrap_iters,
                  covariate_ranking=cov_ranking)
 
-
 def run_elasticnet(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, out_dir, **_):
     def _hparams(m):
         best_C = float(np.atleast_1d(m.named_steps["clf"].C_)[0])
@@ -400,7 +295,6 @@ def run_elasticnet(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, id
                           pw, cov, labels, pw_names, cov_cols,
                           idx_tr, idx_va, idx_te, out_dir, hparams_fn=_hparams)
 
-
 def run_l1_logistic(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, out_dir, **_):
     def _hparams(m):
         best_C = float(np.atleast_1d(m.named_steps["clf"].C_)[0])
@@ -410,12 +304,10 @@ def run_l1_logistic(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, i
                           pw, cov, labels, pw_names, cov_cols,
                           idx_tr, idx_va, idx_te, out_dir, hparams_fn=_hparams)
 
-
 def run_unregularized_logistic(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, out_dir, **_):
     _run_sklearn_logistic(args, build_unregularized_logistic, "unregularized_logistic",
                           pw, cov, labels, pw_names, cov_cols,
                           idx_tr, idx_va, idx_te, out_dir)
-
 
 def run_random_forest(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, out_dir, **_):
     T = pw.shape[2] if pw.ndim == 3 else 1
@@ -445,20 +337,14 @@ def run_random_forest(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va,
     save_outputs(out_dir, probs, labels[idx_te], ranking, best_hparams, search_results, args.bootstrap_iters,
                  covariate_ranking=cov_ranking)
 
-
-# ── Neural runners ────────────────────────────────────────────────────────────
-
 @torch.no_grad()
 
 def _scale_splits(pw, cov, idx_tr, idx_va, idx_te):
-    """Fit StandardScaler on train, apply to val/test for both pathway and covariate arrays."""
-    # Covariates: (N, C)
     cov_scaler = StandardScaler().fit(cov[idx_tr])
     cov_scaled = cov.copy().astype(np.float32)
     for idx in (idx_tr, idx_va, idx_te):
         cov_scaled[idx] = cov_scaler.transform(cov[idx])
 
-    # Pathway matrix: (N, K, T) or (N, K) — reshape to 2D, scale, reshape back
     pw_scaled = pw.copy().astype(np.float32)
     if pw.shape[1] > 0:
         orig_shape = pw.shape[1:]
@@ -469,11 +355,9 @@ def _scale_splits(pw, cov, idx_tr, idx_va, idx_te):
 
     return pw_scaled, cov_scaled
 
-
 def run_neural(args, model_cls, model_kwargs, train_kwargs,
                pw, cov, labels, pw_names, idx_tr, idx_va, idx_te,
                out_dir, weight_file, post_fn=None, batch_size=None):
-    """Shared training loop for all three neural models."""
     pw, cov = _scale_splits(pw, cov, idx_tr, idx_va, idx_te)
     bs = batch_size or TRAIN_CFG["batch_size"]
     train_loader, val_loader, test_loader = make_loaders(
@@ -517,8 +401,6 @@ def run_neural(args, model_cls, model_kwargs, train_kwargs,
     )
     torch.save(model.state_dict(), os.path.join(out_dir, weight_file))
 
-    # Platt scaling: calibrate probabilities to true prevalence using val set
-    # (WeightedRandomSampler trains on balanced batches → raw sigmoid overestimates P(Y=1))
     platt_scaler = fit_platt_scaler(model, val_loader, device=device)
     probs, _ = predict_calibrated(model, test_loader, device=device, platt_scaler=platt_scaler)
 
@@ -526,13 +408,11 @@ def run_neural(args, model_cls, model_kwargs, train_kwargs,
     save_outputs(out_dir, probs, labels[idx_te], ranking, best_hparams,
                  search_results_out, args.bootstrap_iters)
 
-
 def _dims(pw, cov):
     K = pw.shape[1]
     T = pw.shape[2] if pw.ndim == 3 else (1 if K > 0 else 0)
     C = cov.shape[1]
     return K, T, C
-
 
 def run_global_attention(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, out_dir, **_):
     K, T, C = _dims(pw, cov)
@@ -550,7 +430,6 @@ def run_global_attention(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_
     run_neural(args, GlobalPathwayAttentionModel, fixed, {},
                pw, cov, labels, pw_names, idx_tr, idx_va, idx_te,
                out_dir, "global_attention.pt", post_fn=post)
-
 
 def run_transformer(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, out_dir, **_):
     K, T, C = _dims(pw, cov)
@@ -570,7 +449,6 @@ def run_transformer(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, i
     run_neural(args, PathwayTransformer, fixed, {},
                pw, cov, labels, pw_names, idx_tr, idx_va, idx_te,
                out_dir, "transformer.pt", post_fn=post)
-
 
 def run_gnn(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, out_dir, **_):
     import pandas as pd
@@ -650,9 +528,6 @@ def run_gnn(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, o
                pw, cov, labels, pw_names, idx_tr, idx_va, idx_te,
                out_dir, "gnn.pt", post_fn=post, batch_size=32)
 
-
-# ── Dispatch ──────────────────────────────────────────────────────────────────
-
 RUNNERS = {
     "l1_logistic":         run_l1_logistic,
     "elasticnet":          run_elasticnet,
@@ -663,28 +538,22 @@ RUNNERS = {
     "gnn":                 run_gnn,
 }
 
-
 def _fmt(seconds):
-    """Format elapsed seconds as m:ss or s."""
     if seconds >= 60:
         return f"{int(seconds)//60}m {int(seconds)%60:02d}s"
     return f"{seconds:.1f}s"
 
-
 def _step(label, model_name):
-    """Print a timestamped progress line and return the start time."""
     msg = f"[{model_name}] {label}..."
     print(msg, flush=True)
     return time.time()
-
 
 def _done(label, model_name, t0):
     elapsed = time.time() - t0
     print(f"[{model_name}] {label} done ({_fmt(elapsed)})", flush=True)
 
-
-def _resolve_device(requested: str | None) -> str:
-    if requested is not None:
+def _autodevice(requested):
+    if requested:
         return requested
     if torch.cuda.is_available():
         return "cuda"
@@ -692,11 +561,9 @@ def _resolve_device(requested: str | None) -> str:
         return "mps"
     return "cpu"
 
-
 def main():
     args = parse_args()
-    args.device = _resolve_device(args.device)
-    print(f"Device: {args.device}")
+    args.device = _autodevice(args.device)
     splits_dir = args.splits_dir or args.results_dir
     torch.manual_seed(42)
     np.random.seed(42)
@@ -744,7 +611,6 @@ def main():
 
     total = time.time() - wall_start
     print(f"[{args.model}] finished -> {out_dir}/  (total: {_fmt(total)})", flush=True)
-
 
 if __name__ == "__main__":
     main()

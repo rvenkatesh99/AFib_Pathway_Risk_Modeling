@@ -1,18 +1,5 @@
-"""
-Pathway Transformer Model.
-
-When n_pathways > 0:
-  - Learned pathway identity embeddings + CLS token prepended to the pathway sequence.
-  - Two transformer encoder layers with multi-head self-attention.
-  - CLS token output fused with covariate embedding -> output head.
-
-When n_pathways == 0 (covariates-only):
-  - Transformer is skipped; prediction is from the covariate encoder only.
-"""
-
 import torch
 import torch.nn as nn
-
 
 class PathwayTransformer(nn.Module):
 
@@ -68,7 +55,6 @@ class PathwayTransformer(nn.Module):
         return self.output_head(combined).squeeze(-1)
 
     def get_attention_weights(self, pathway_features, covariates):
-        """Per-layer per-head attention weights. Returns list of (batch, n_heads, K+1, K+1)."""
         if self.n_pathways == 0:
             return []
         batch_size = pathway_features.size(0)
@@ -89,7 +75,6 @@ class PathwayTransformer(nn.Module):
         return attn_all
 
     def compute_mean_attention(self, data_loader, device="cpu"):
-        """Mean attention weights across the test set. Returns (n_layers, n_heads, K+1, K+1)."""
         if self.n_pathways == 0:
             return None
         self.eval()

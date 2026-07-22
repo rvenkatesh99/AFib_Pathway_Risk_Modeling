@@ -1,13 +1,3 @@
-"""
-Evaluation metrics:
-  - AUROC, AUPRC, F1 at optimal threshold, Brier score
-  - NRI (continuous), IDI vs a reference model
-  - Calibration: Hosmer-Lemeshow, calibration slope/intercept
-  - Bootstrap CIs (1000 iterations)
-  - DeLong's test for correlated AUCs
-  - Subgroup (ancestry) reporting
-"""
-
 import numpy as np
 from sklearn.metrics import (
     roc_auc_score, average_precision_score, f1_score, brier_score_loss,
@@ -15,7 +5,6 @@ from sklearn.metrics import (
 )
 from sklearn.linear_model import LogisticRegression
 from scipy import stats
-
 
 def optimal_threshold_f1(y_true, y_prob):
     """F1 score at the threshold maximizing F1 on the provided data."""
@@ -28,7 +17,6 @@ def optimal_threshold_f1(y_true, y_prob):
     best_thresh = thresholds[best_idx]
     y_pred = (y_prob >= best_thresh).astype(int)
     return f1_score(y_true, y_pred), best_thresh
-
 
 def threshold_metrics(y_true: np.ndarray, y_prob: np.ndarray, threshold: float) -> dict:
     """Sensitivity, specificity, and balanced accuracy at a fixed threshold."""
@@ -46,13 +34,8 @@ def threshold_metrics(y_true: np.ndarray, y_prob: np.ndarray, threshold: float) 
         "balanced_accuracy": float((sensitivity + specificity) / 2),
     }
 
-
 def compute_metrics(y_true: np.ndarray, y_prob: np.ndarray,
                     threshold: float = None) -> dict:
-    """
-    threshold: fixed classification threshold for sensitivity/specificity/balanced_accuracy.
-               Defaults to the observed prevalence in y_true.
-    """
     auroc = roc_auc_score(y_true, y_prob)
     auprc = average_precision_score(y_true, y_prob)
     f1, thresh = optimal_threshold_f1(y_true, y_prob)
@@ -67,7 +50,6 @@ def compute_metrics(y_true: np.ndarray, y_prob: np.ndarray,
         **threshold_metrics(y_true, y_prob, t),
     }
 
-
 def bootstrap_metrics(
     y_true: np.ndarray,
     y_prob: np.ndarray,
@@ -75,10 +57,6 @@ def bootstrap_metrics(
     ci_level: float = 0.95,
     seed: int = 42,
 ) -> dict:
-    """
-    Bootstrap confidence intervals for all metrics.
-    Returns dict of {metric: {"mean": ..., "ci_lower": ..., "ci_upper": ...}}.
-    """
     rng = np.random.default_rng(seed)
     n = len(y_true)
     prevalence = float(y_true.mean())
@@ -108,10 +86,6 @@ def bootstrap_metrics(
         }
     return result
 
-
-# ---- DeLong's test for correlated AUCs ----
-# Based on: DeLong et al. (1988) Biometrics and the fastDeLong algorithm.
-
 def _compute_midrank(x):
     J = np.argsort(x)
     Z = x[J]
@@ -127,7 +101,6 @@ def _compute_midrank(x):
     T2 = np.empty(N, dtype=float)
     T2[J] = T + 1
     return T2
-
 
 def _fastDeLong(y_true, prob_pred_1, prob_pred_2):
     """Returns (auc1, auc2, var_auc1, var_auc2, covar)."""
@@ -167,29 +140,18 @@ def _fastDeLong(y_true, prob_pred_1, prob_pred_2):
 
     return auc1, auc2, var1, var2, covar
 
-
 def delong_test(y_true: np.ndarray, prob1: np.ndarray, prob2: np.ndarray) -> dict:
-    """
-    DeLong's test for comparing two correlated AUCs.
-    Returns {"auc1", "auc2", "z_stat", "p_value"}.
-    """
     auc1, auc2, var1, var2, covar = _fastDeLong(y_true, prob1, prob2)
     diff_var = var1 + var2 - 2 * covar
     z = (auc1 - auc2) / np.sqrt(max(diff_var, 1e-12))
     p = 2 * (1 - stats.norm.cdf(abs(z)))
     return {"auc1": auc1, "auc2": auc2, "z_stat": z, "p_value": p}
 
-
 def evaluate_subgroups(
     y_true: np.ndarray,
     y_prob: np.ndarray,
     ancestry_labels: np.ndarray,
 ) -> dict:
-    """
-    Evaluate metrics within each ancestry subgroup.
-    ancestry_labels: array of strings (e.g., "EUR", "AFR")
-    Returns {ancestry: metrics_dict}.
-    """
     results = {}
     for anc in np.unique(ancestry_labels):
         mask = ancestry_labels == anc
@@ -198,89 +160,7 @@ def evaluate_subgroups(
         results[anc] = compute_metrics(y_true[mask], y_prob[mask])
     return results
 
-
-# ── NRI and IDI ───────────────────────────────────────────────────────────────
-
-def compute_nri(y_true: np.ndarray, prob_new: np.ndarray, prob_ref: np.ndarray) -> dict:
-    """
-    Continuous (category-free) NRI.
-
-    NRI = P(up | event) - P(down | event) + P(down | non-event) - P(up | non-event)
-
-    Pencina et al. (2008) Statistics in Medicine.
-    Returns NRI estimate and two-sided p-value via normal approximation.
-    """
-    events    = y_true == 1
-    nonevents = y_true == 0
-
-    up_ev   = np.mean(prob_new[events]    > prob_ref[events])
-    down_ev = np.mean(prob_new[events]    < prob_ref[events])
-    up_ne   = np.mean(prob_new[nonevents] > prob_ref[nonevents])
-    down_ne = np.mean(prob_new[nonevents] < prob_ref[nonevents])
-
-    nri_events    = up_ev   - down_ev
-    nri_nonevents = down_ne - up_ne
-    nri           = nri_events + nri_nonevents
-
-    # Variance via Pencina (2008) eq. 7
-    n_ev = events.sum()
-    n_ne = nonevents.sum()
-    var  = (up_ev + down_ev) / n_ev + (up_ne + down_ne) / n_ne
-    se   = np.sqrt(max(var, 1e-12))
-    z    = nri / se
-    p    = 2 * (1 - stats.norm.cdf(abs(z)))
-
-    return {
-        "nri":           float(nri),
-        "nri_events":    float(nri_events),
-        "nri_nonevents": float(nri_nonevents),
-        "nri_se":        float(se),
-        "nri_p":         float(p),
-    }
-
-
-def compute_idi(y_true: np.ndarray, prob_new: np.ndarray, prob_ref: np.ndarray) -> dict:
-    """
-    Integrated Discrimination Improvement (IDI).
-
-    IDI = (mean_new(events) - mean_new(non-events))
-        - (mean_ref(events) - mean_ref(non-events))
-
-    Pencina et al. (2008) Statistics in Medicine.
-    """
-    events    = y_true == 1
-    nonevents = y_true == 0
-
-    slope_new = prob_new[events].mean() - prob_new[nonevents].mean()
-    slope_ref = prob_ref[events].mean() - prob_ref[nonevents].mean()
-    idi       = slope_new - slope_ref
-
-    # Variance via delta method
-    n_ev  = events.sum()
-    n_ne  = nonevents.sum()
-    diff  = (prob_new - prob_ref)
-    var   = (diff[events].var(ddof=1) / n_ev
-             + diff[nonevents].var(ddof=1) / n_ne)
-    se    = np.sqrt(max(var, 1e-12))
-    z     = idi / se
-    p     = 2 * (1 - stats.norm.cdf(abs(z)))
-
-    return {
-        "idi":           float(idi),
-        "disc_slope_new": float(slope_new),
-        "disc_slope_ref": float(slope_ref),
-        "idi_se":        float(se),
-        "idi_p":         float(p),
-    }
-
-
-# ── Calibration ───────────────────────────────────────────────────────────────
-
 def hosmer_lemeshow(y_true: np.ndarray, y_prob: np.ndarray, n_groups: int = 10) -> dict:
-    """
-    Hosmer-Lemeshow goodness-of-fit test (decile-of-risk grouping).
-    H0: model is well-calibrated. Large p-value = good calibration.
-    """
     order  = np.argsort(y_prob)
     y_sort = y_true[order]
     p_sort = y_prob[order]
@@ -301,12 +181,7 @@ def hosmer_lemeshow(y_true: np.ndarray, y_prob: np.ndarray, n_groups: int = 10) 
     p  = 1 - stats.chi2.cdf(hl_stat, df)
     return {"hl_stat": float(hl_stat), "hl_df": df, "hl_p": float(p)}
 
-
 def calibration_slope(y_true: np.ndarray, y_prob: np.ndarray) -> dict:
-    """
-    Calibration slope and intercept via logistic regression of outcome on logit(predicted).
-    Perfect calibration: intercept=0, slope=1.
-    """
     eps    = 1e-7
     p      = np.clip(y_prob, eps, 1 - eps)
     logits = np.log(p / (1 - p))
@@ -317,19 +192,12 @@ def calibration_slope(y_true: np.ndarray, y_prob: np.ndarray) -> dict:
         "cal_intercept": float(lr.intercept_[0]),
     }
 
-
 def compute_calibration(y_true: np.ndarray, y_prob: np.ndarray, n_groups: int = 10) -> dict:
     """Combined calibration metrics: HL test + slope/intercept."""
     return {**hosmer_lemeshow(y_true, y_prob, n_groups),
             **calibration_slope(y_true, y_prob)}
 
-
 def pairwise_delong(model_probs: dict, y_true: np.ndarray) -> dict:
-    """
-    All pairwise DeLong tests.
-    model_probs: {model_name: y_prob array}
-    Returns {(name1, name2): delong_result_dict}.
-    """
     names = list(model_probs.keys())
     results = {}
     for i in range(len(names)):

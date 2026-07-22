@@ -1,25 +1,3 @@
-"""
-Interpretability plots for pathway risk modeling.
-
-Reads output from aggregate_results.py:
-  - metrics_summary.csv
-  - ranking_percentile.csv
-
-Produces:
-  01_auroc_comparison.pdf       — AUROC + 95% CI per model, grouped by feature set
-  02_auroc_heatmap.pdf          — AUROC heatmap: rows=feature sets, cols=models
-  03_multimodel_dotplot.pdf     — Top-N features by percentile rank across models (per feature set)
-  04_cross_tissue_heatmap.pdf   — Per-model heatmap: rows=pathways, cols=GREx tissues
-  05_delong_heatmap.pdf         — DeLong p-value heatmap within each feature set
-
-Usage:
-  python scripts/plot_interpretability.py \
-      --agg_dir  /path/to/aggregated/ \
-      --out_dir  /path/to/figures/ \
-      [--top_n 30] \
-      [--feature_sets gwas_covs grex_AC_covs ...]  # subset to plot; default: all
-"""
-
 import argparse
 import os
 import textwrap
@@ -32,8 +10,6 @@ import matplotlib.patches as mpatches
 import seaborn as sns
 from matplotlib.colors import LinearSegmentedColormap
 from sklearn.metrics import roc_curve, auc, precision_recall_curve, average_precision_score
-
-# ── Shared style ──────────────────────────────────────────────────────────────
 
 MODEL_ORDER = [
     "l1_logistic", "elasticnet",
@@ -80,7 +56,6 @@ _plasma_dark = LinearSegmentedColormap.from_list(
 _CMAP_SEQ = _plasma_dark   # sequential: dark plasma
 _CMAP_DIV = "RdBu_r"       # diverging: blue–white–red
 
-
 # Logical display order for feature set rows (actual names in metrics CSV).
 # Rows not in this list are appended alphabetically at the end.
 PREFERRED_ROW_ORDER = [
@@ -107,7 +82,6 @@ _GNN_GRAPH_SUFFIXES = [
     "_fully_connected", "_jaccard", "_score_correlation", "_string",
 ]
 
-
 def _normalize_gnn_rows(df):
     """Strip graph method suffix from GNN feature_set names, encode in model column.
 
@@ -121,7 +95,6 @@ def _normalize_gnn_rows(df):
         df.loc[mask, "feature_set"] = df.loc[mask, "feature_set"].str[: -len(suffix)]
         df.loc[mask, "model"] = "gnn_" + method
     return df
-
 
 def _ordered_feature_sets(all_fs):
     """Return feature sets in logical display order."""
@@ -137,7 +110,6 @@ TISSUE_LABELS = {
     "grex_HLV_covs": "Heart\nLeft Vent.",
     "grex_WB_covs":  "Whole\nBlood",
 }
-
 
 def _style():
     plt.rcParams.update({
@@ -174,7 +146,6 @@ def _style():
         "savefig.pad_inches": 0.08,
     })
 
-
 def _save(fig, path):
     """Save as SVG (vector) and PNG (300 dpi raster). Extension in path is replaced."""
     fig.tight_layout()
@@ -185,15 +156,11 @@ def _save(fig, path):
         print(f"  Saved: {out}")
     plt.close(fig)
 
-
 def _model_order(models):
     """Sort models in canonical display order."""
     known = [m for m in MODEL_ORDER if m in models]
     extra = [m for m in sorted(models) if m not in MODEL_ORDER]
     return known + extra
-
-
-# ── 1. AUROC comparison — grouped bar chart ───────────────────────────────────
 
 def plot_auroc_comparison(metrics_df, feature_sets, out_path):
     models = _model_order(metrics_df["model"].unique())
@@ -236,9 +203,6 @@ def plot_auroc_comparison(metrics_df, feature_sets, out_path):
               title="Model", title_fontsize=plt.rcParams["legend.fontsize"])
     _save(fig, out_path)
 
-
-# ── 2. AUROC heatmap ──────────────────────────────────────────────────────────
-
 def _draw_heatmap(ax, pivot, feature_sets, models, title, vmin=None, vmax=None):
     """Render a single AUROC heatmap panel onto ax."""
     assert pivot.shape[0] == len(feature_sets), (
@@ -271,7 +235,6 @@ def _draw_heatmap(ax, pivot, feature_sets, models, title, vmin=None, vmax=None):
     # Remove tick marks — cell boundaries serve as guides
     ax.tick_params(length=0)
     return im
-
 
 def plot_auroc_heatmap(metrics_df, feature_sets, out_path):
     # GNN results are reported in a separate table; exclude from this heatmap.
@@ -313,7 +276,6 @@ def plot_auroc_heatmap(metrics_df, feature_sets, out_path):
 
     _save(fig, out_path)
 
-
 def plot_gnn_table(metrics_df, topology_df, out_path):
     """
     Side-by-side summary for GNN models:
@@ -343,7 +305,6 @@ def plot_gnn_table(metrics_df, topology_df, out_path):
     if ncols == 1:
         axes = [axes]
 
-    # ── AUROC heatmap ──────────────────────────────────────────────────────
     all_finite = pivot_auroc.values[~np.isnan(pivot_auroc.values)]
     if len(all_finite):
         data_min, data_max = all_finite.min(), all_finite.max()
@@ -360,7 +321,6 @@ def plot_gnn_table(metrics_df, topology_df, out_path):
         cbar.set_label("AUROC", fontsize=9)
         cbar.set_ticks(np.round(np.linspace(vmin, vmax, 6), 3))
 
-    # ── Topology heatmap ───────────────────────────────────────────────────
     if has_topo:
         pivot_edges = (topology_df
                        .pivot(index="feature_set", columns="graph_method", values="n_edges")
@@ -385,7 +345,6 @@ def plot_gnn_table(metrics_df, topology_df, out_path):
 
     plt.tight_layout()
     _save(fig, out_path)
-
 
 def plot_auroc_dotplot(metrics_df, feature_sets, out_path):
     """
@@ -472,9 +431,6 @@ def plot_auroc_dotplot(metrics_df, feature_sets, out_path):
               title="Model", title_fontsize=9)
     _save(fig, out_path)
 
-
-# ── 3. Multi-model feature dot plot (per feature set) ─────────────────────────
-
 def plot_multimodel_dotplot(ranking_df, feature_set, models, top_n, out_path):
     """
     ranking_df: ranking_percentile.csv loaded as multi-index columns (feature_set, model)
@@ -528,9 +484,6 @@ def plot_multimodel_dotplot(ranking_df, feature_set, models, top_n, out_path):
     )
     _save(fig, out_path)
 
-
-# ── 4. Cross-tissue pathway heatmap (per model) ───────────────────────────────
-
 def plot_cross_tissue_heatmap(ranking_df, model, top_n, out_path):
     """
     For a single model, show how pathway percentile ranks vary across GREx tissues.
@@ -582,9 +535,6 @@ def plot_cross_tissue_heatmap(ranking_df, model, top_n, out_path):
     )
     _save(fig, out_path)
 
-
-# ── 5. Delta AUROC vs baseline ───────────────────────────────────────────────
-
 def plot_delta_auroc(metrics_df, feature_sets, out_path):
     """
     Grouped bar chart of delta AUROC vs covariates_logistic baseline.
@@ -625,9 +575,6 @@ def plot_delta_auroc(metrics_df, feature_sets, out_path):
               title="Model", title_fontsize=plt.rcParams["legend.fontsize"])
     _save(fig, out_path)
 
-
-# ── 6. Sparsity — pathway selection by L1 / elasticnet ───────────────────────
-
 def plot_sparsity(sparsity_df, out_path):
     """
     Bar chart showing % of pathways selected (non-zero coefficient) per
@@ -665,9 +612,6 @@ def plot_sparsity(sparsity_df, out_path):
     fig.suptitle("Pathway sparsity — % features with non-zero coefficient", y=1.02)
     _save(fig, out_path)
 
-
-# ── 7. DeLong p-value heatmap ─────────────────────────────────────────────────
-
 def plot_delong_heatmap(delong_df, feature_set, out_path):
     sub = delong_df[delong_df["feature_set"] == feature_set]
     if sub.empty:
@@ -704,9 +648,6 @@ def plot_delong_heatmap(delong_df, feature_set, out_path):
     plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="−log₁₀(p)")
     ax.set_title(f"DeLong p-values — {feature_set.replace('_covs', '').replace('_', ' ')}")
     _save(fig, out_path)
-
-
-# ── 8. Covariate importance ───────────────────────────────────────────────────
 
 def plot_covariate_importance(ranking_df, feature_sets, models, out_path):
     """
@@ -790,9 +731,6 @@ def plot_covariate_importance(ranking_df, feature_sets, models, out_path):
                  y=1.02)
     _save(fig, out_path)
 
-
-# ── 9. ROC curves ─────────────────────────────────────────────────────────────
-
 def plot_roc_curves(all_probs, all_labels, feature_sets, models, out_path):
     """One subplot per feature set; one ROC curve per model. Diagonal = chance."""
     fs_with_data = [fs for fs in feature_sets
@@ -837,9 +775,6 @@ def plot_roc_curves(all_probs, all_labels, feature_sets, models, out_path):
 
     _save(fig, out_path)
 
-
-# ── 9. Precision-recall curves ────────────────────────────────────────────────
-
 def plot_prc_curves(all_probs, all_labels, feature_sets, models, out_path):
     """One subplot per feature set; one PRC per model. Dashed = chance (prevalence)."""
     fs_with_data = [fs for fs in feature_sets
@@ -881,9 +816,6 @@ def plot_prc_curves(all_probs, all_labels, feature_sets, models, out_path):
         ax.legend(fontsize=6, frameon=False, loc="upper right")
 
     _save(fig, out_path)
-
-
-# ── 10. Calibration reliability diagram ───────────────────────────────────────
 
 def plot_calibration_diagram(all_probs, all_labels, feature_sets, models, out_path,
                              n_bins=10):
@@ -954,9 +886,6 @@ def plot_calibration_diagram(all_probs, all_labels, feature_sets, models, out_pa
 
     _save(fig, out_path)
 
-
-# ── 11. Pathway lollipop ──────────────────────────────────────────────────────
-
 def plot_pathway_lollipop(ranking_df, feature_set, models, top_n, out_path):
     """
     Horizontal lollipop: one subplot per model, rows = top pathways by percentile rank.
@@ -1020,9 +949,6 @@ def plot_pathway_lollipop(ranking_df, feature_set, models, top_n, out_path):
     )
     _save(fig, out_path)
 
-
-# ── 12. Multi-metric forest plot — best models × main feature sets ────────────
-
 MAIN_FEATURE_SETS = [
     "gwas_prs",
     "gwas_grex_HAA_HLV_prs",
@@ -1042,7 +968,6 @@ METRICS_CONFIG = [
     ("balanced_accuracy", "Balanced\nAccuracy","balanced_accuracy_ci_lower",  "balanced_accuracy_ci_upper", 0.0,  1.0),
     ("brier_score",       "Brier Score",       "brier_score_ci_lower",       "brier_score_ci_upper",       0.0,  0.3),
 ]
-
 
 def plot_best_models_forest(metrics_df, best_models, out_path,
                             feature_sets=None, gnn_metrics_df=None):
@@ -1137,9 +1062,6 @@ def plot_best_models_forest(metrics_df, best_models, out_path,
     fig.suptitle("Model performance across feature sets — all metrics", y=1.01)
     _save(fig, out_path)
 
-
-# ── Helper: load saved probs/labels ───────────────────────────────────────────
-
 def _load_probs_labels(agg_dir):
     """Load probs/{fs}__{model}.npy and probs/labels__{fs}.npy saved by aggregate_results.py."""
     probs_dir = os.path.join(agg_dir, "probs")
@@ -1161,9 +1083,6 @@ def _load_probs_labels(agg_dir):
                 all_probs[(parts[0], parts[1])] = np.load(fpath)
     return all_probs, all_labels
 
-
-# ── Main ──────────────────────────────────────────────────────────────────────
-
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--agg_dir", required=True,
@@ -1176,13 +1095,11 @@ def parse_args():
                    help="Models for multi-metric forest plot. Default: l1_logistic transformer gnn_jaccard.")
     return p.parse_args()
 
-
 def main():
     args = parse_args()
     _style()
     os.makedirs(args.out_dir, exist_ok=True)
 
-    # ── Load data ─────────────────────────────────────────────────────────────
     metrics_path  = os.path.join(args.agg_dir, "metrics_summary.csv")
     rank_path     = os.path.join(args.agg_dir, "ranking_percentile.csv")
     delong_path   = os.path.join(args.agg_dir, "delong_summary.csv")
@@ -1229,14 +1146,12 @@ def main():
     print(f"Feature sets : {feature_sets}")
     print(f"Models       : {models}")
 
-    # ── 1. AUROC grouped bar ─────────────────────────────────────────────────
     print("Plotting AUROC comparison...")
     plot_auroc_comparison(
         metrics_df, feature_sets,
         os.path.join(args.out_dir, "01_auroc_comparison.pdf"),
     )
 
-    # ── 1b. GNN summary table ─────────────────────────────────────────────────
     if gnn_metrics_df is not None:
         print("Plotting GNN summary table...")
         plot_gnn_table(
@@ -1244,21 +1159,18 @@ def main():
             os.path.join(args.out_dir, "01b_gnn_summary.pdf"),
         )
 
-    # ── 2. AUROC heatmap ──────────────────────────────────────────────────────
     print("Plotting AUROC heatmap...")
     plot_auroc_heatmap(
         metrics_df, feature_sets,
         os.path.join(args.out_dir, "02_auroc_heatmap.pdf"),
     )
 
-    # ── 2b. AUROC forest-plot style dot plot (main paper figure) ──────────────
     print("Plotting AUROC dot plot...")
     plot_auroc_dotplot(
         metrics_df, feature_sets,
         os.path.join(args.out_dir, "02b_auroc_dotplot.pdf"),
     )
 
-    # ── 2c. Covariate importance ──────────────────────────────────────────────
     if ranking_df is not None:
         print("Plotting covariate importance...")
         plot_covariate_importance(
@@ -1266,7 +1178,6 @@ def main():
             os.path.join(args.out_dir, "02c_covariate_importance.png"),
         )
 
-    # ── 3. Multi-model dot plot (one per feature set) ─────────────────────────
     if ranking_df is not None:
         for fs in feature_sets:
             if fs == "covs_only":
@@ -1278,7 +1189,6 @@ def main():
                 os.path.join(args.out_dir, f"03_dotplot_{tag}.pdf"),
             )
 
-    # ── 4. Cross-tissue heatmap (one per model) ───────────────────────────────
     if ranking_df is not None:
         for model in models:
             print(f"Plotting cross-tissue heatmap: {model}...")
@@ -1287,21 +1197,18 @@ def main():
                 os.path.join(args.out_dir, f"04_cross_tissue_{model}.pdf"),
             )
 
-    # ── 5. Delta AUROC vs baseline ────────────────────────────────────────────
     print("Plotting delta AUROC...")
     plot_delta_auroc(
         metrics_df, feature_sets,
         os.path.join(args.out_dir, "05_delta_auroc.pdf"),
     )
 
-    # ── 6. Sparsity ───────────────────────────────────────────────────────────
     print("Plotting sparsity...")
     plot_sparsity(
         sparsity_df,
         os.path.join(args.out_dir, "06_sparsity.pdf"),
     )
 
-    # ── 7. DeLong heatmap (one per feature set) ───────────────────────────────
     if delong_df is not None:
         for fs in feature_sets:
             tag = fs.replace("_covs", "").replace("_", "-")
@@ -1311,7 +1218,6 @@ def main():
                 os.path.join(args.out_dir, f"07_delong_{tag}.png"),
             )
 
-    # ── 12. Multi-metric forest plot ─────────────────────────────────────────
     best_models = args.best_models or ["l1_logistic", "transformer", "gnn_jaccard"]
     print(f"Plotting multi-metric forest plot (models: {best_models})...")
     plot_best_models_forest(
@@ -1321,7 +1227,6 @@ def main():
         gnn_metrics_df=gnn_metrics_df,
     )
 
-    # ── 8. ROC curves ─────────────────────────────────────────────────────────
     if all_probs:
         print("Plotting ROC curves...")
         plot_roc_curves(
@@ -1329,7 +1234,6 @@ def main():
             os.path.join(args.out_dir, "08_roc_curves.png"),
         )
 
-    # ── 9. Precision-recall curves ────────────────────────────────────────────
     if all_probs:
         print("Plotting PRC curves...")
         plot_prc_curves(
@@ -1337,7 +1241,6 @@ def main():
             os.path.join(args.out_dir, "09_prc_curves.png"),
         )
 
-    # ── 10. Calibration reliability diagram ───────────────────────────────────
     if all_probs:
         print("Plotting calibration diagrams...")
         plot_calibration_diagram(
@@ -1345,7 +1248,6 @@ def main():
             os.path.join(args.out_dir, "10_calibration.png"),
         )
 
-    # ── 11. Pathway lollipop (one per feature set) ────────────────────────────
     if ranking_df is not None:
         for fs in feature_sets:
             if fs == "covs_only":
@@ -1358,7 +1260,6 @@ def main():
             )
 
     print(f"\nAll figures saved to {args.out_dir}/")
-
 
 if __name__ == "__main__":
     main()

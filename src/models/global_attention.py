@@ -1,21 +1,5 @@
-"""
-Global Pathway Attention Model.
-
-When n_pathways > 0:
-  - Shared per-pathway encoder (Linear -> LayerNorm -> ReLU) maps each pathway's
-    T-dim feature vector to a d-dim embedding.
-  - Learned population-level attention vector a in R^K; alpha = softmax(a).
-  - Individual representation: weighted sum of pathway embeddings.
-  - Covariate MLP output concatenated with pathway context -> output head.
-
-When n_pathways == 0 (covariates-only):
-  - Pathway branch is skipped entirely.
-  - Output head takes only the covariate embedding.
-"""
-
 import torch
 import torch.nn as nn
-
 
 class GlobalPathwayAttentionModel(nn.Module):
 
@@ -35,9 +19,7 @@ class GlobalPathwayAttentionModel(nn.Module):
                 nn.ReLU(),
                 nn.Dropout(dropout),
             )
-            # Small random init breaks uniform softmax symmetry
             self.attention_logits = nn.Parameter(torch.randn(n_pathways) * 0.01)
-            # LayerNorm on pathway context so it's comparable in scale to cov branch
             self.pathway_context_norm = nn.LayerNorm(embed_dim)
 
         self.covariate_encoder = nn.Sequential(
@@ -54,7 +36,6 @@ class GlobalPathwayAttentionModel(nn.Module):
         self.output_head = nn.Linear(head_in, 1)
 
     def get_attention_weights(self):
-        """Softmax-normalised pathway importance weights alpha (K,). Returns None when K=0."""
         if self.n_pathways == 0:
             return None
         return torch.softmax(self.attention_logits, dim=0)

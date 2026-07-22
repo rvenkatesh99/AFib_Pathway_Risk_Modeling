@@ -8,9 +8,6 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 
-
-# ── Data loading and batching ─────────────────────────────────────────────────
-
 def load_data(pathway_matrix_path, covariate_path, label_col="afib", covariate_cols=None):
     def _read(path):
         if path.endswith(".parquet"):
@@ -32,7 +29,6 @@ def load_data(pathway_matrix_path, covariate_path, label_col="afib", covariate_c
 
     return pw, cov, labels, pw_cols, covariate_cols, sample_ids
 
-
 class PathwayDataset(Dataset):
     def __init__(self, pw, cov, labels):
         if pw.ndim == 2:
@@ -49,7 +45,6 @@ class PathwayDataset(Dataset):
                 "covariates":       self.cov[idx],
                 "label":            self.labels[idx]}
 
-
 def make_loaders(pw_tr, cov_tr, y_tr, pw_va, cov_va, y_va, pw_te, cov_te, y_te, batch_size=256):
     counts  = np.bincount(y_tr.astype(int))
     weights = torch.tensor(1.0 / counts[y_tr.astype(int)], dtype=torch.float32)
@@ -62,9 +57,6 @@ def make_loaders(pw_tr, cov_tr, y_tr, pw_va, cov_va, y_va, pw_te, cov_te, y_te, 
     te = DataLoader(PathwayDataset(pw_te, cov_te, y_te), batch_size=batch_size,
                     shuffle=False, num_workers=0)
     return tr, va, te
-
-
-# ── Training loop ─────────────────────────────────────────────────────────────
 
 class EarlyStopping:
     def __init__(self, patience=15, min_delta=1e-4):
@@ -86,13 +78,10 @@ class EarlyStopping:
     def restore_best(self, model):
         model.load_state_dict(self.best_state)
 
-
 def _focal_loss(logits, targets, gamma=2.0):
-    """Focal loss: down-weights easy negatives to improve AUPRC on imbalanced data."""
     bce = nn.functional.binary_cross_entropy_with_logits(logits, targets, reduction="none")
     pt  = torch.exp(-bce)
     return ((1 - pt) ** gamma * bce).mean()
-
 
 def train(model, train_loader, val_loader, train_labels,
           n_epochs=200, lr=1e-3, weight_decay=1e-4, patience=15, device="cpu", verbose=True):
@@ -140,7 +129,6 @@ def train(model, train_loader, val_loader, train_labels,
     stopper.restore_best(model)
     return model, history
 
-
 @torch.no_grad()
 def _evaluate(model, loader, criterion, device):
     model.eval()
@@ -156,10 +144,8 @@ def _evaluate(model, loader, criterion, device):
     auroc  = roc_auc_score(labels, probs) if len(np.unique(labels)) > 1 else 0.5
     return total / len(loader.dataset), auroc
 
-
 @torch.no_grad()
 def _get_logits(model, loader, device):
-    """Collect raw logits and labels from a DataLoader."""
     model.eval()
     logits_all, labels_all = [], []
     for batch in loader:
@@ -168,26 +154,19 @@ def _get_logits(model, loader, device):
         labels_all.append(y.cpu().numpy())
     return np.concatenate(logits_all), np.concatenate(labels_all)
 
-
 def fit_platt_scaler(model, val_loader, device):
-    """Fit a logistic regression on val logits to calibrate to true prevalence."""
     logits, labels = _get_logits(model, val_loader, device)
     scaler = LogisticRegression(C=1.0, solver="lbfgs", max_iter=1000)
     scaler.fit(logits.reshape(-1, 1), labels)
     return scaler
 
-
 def predict_calibrated(model, loader, device, platt_scaler=None):
-    """Return calibrated probabilities. Falls back to raw sigmoid if no scaler."""
     logits, labels = _get_logits(model, loader, device)
     if platt_scaler is not None:
         probs = platt_scaler.predict_proba(logits.reshape(-1, 1))[:, 1]
     else:
         probs = 1 / (1 + np.exp(-logits))
     return probs, labels
-
-
-# ── Hyperparameter tuning ─────────────────────────────────────────────────────
 
 def tune_hyperparameters(model_cls, model_kwargs_grid, train_loader, val_loader,
                          train_labels, device="cpu", n_epochs=60, patience=8):
