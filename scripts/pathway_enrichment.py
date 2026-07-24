@@ -47,7 +47,7 @@ ENRICHR_LIBRARIES = [
 # KEGG, Reactome, GO_Biological_Process excluded — circular with input pathway features
 
 CONTINUOUS_MODELS = {"global_attention", "gnn", "random_forest", "transformer"}
-SELECTION_MODELS  = {"l1_logistic", "elasticnet", "unregularized_logistic"}
+SELECTION_MODELS  = {"l1_logistic", "elasticnet", "logistic"}
 
 _LIB_SHORT = {
     "MSigDB_Hallmark_2020":       "Hallmark",

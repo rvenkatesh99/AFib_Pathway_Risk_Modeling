@@ -61,8 +61,7 @@ def build_covariates_logistic(C: float = 1.0):
     ])
 
 
-def build_unregularized_logistic():
-    """Unregularized logistic regression — standard for PRS + small covariate sets."""
+def build_logistic():
     return Pipeline([
         ("scaler", StandardScaler()),
         ("clf", LogisticRegression(

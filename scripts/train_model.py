@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.trainer import (load_data, make_loaders, train, tune_hyperparameters,
                          fit_platt_scaler, predict_calibrated)
 from src.models.baseline import (
-    build_l1_logistic, build_elasticnet, build_unregularized_logistic,
+    build_l1_logistic, build_elasticnet, build_logistic,
     build_random_forest, flatten_pathway_matrix, save_model,
 )
 from src.models.global_attention import GlobalPathwayAttentionModel
@@ -59,7 +59,7 @@ HPARAM_GRIDS = {
 DEFAULTS = {
     "l1_logistic":         {},
     "elasticnet":          {},
-    "unregularized_logistic": {},
+    "logistic":               {},
     "random_forest":       {"n_estimators": 500, "max_depth": 12, "min_samples_leaf": 20},
     "global_attention":    {"embed_dim": 128, "dropout": 0.1, "lr": 1e-3, "weight_decay": 1e-4},
     "transformer":         {"embed_dim": 128, "n_heads": 4, "dropout": 0.2, "lr": 1e-3, "weight_decay": 1e-4},
@@ -304,8 +304,8 @@ def run_l1_logistic(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, i
                           pw, cov, labels, pw_names, cov_cols,
                           idx_tr, idx_va, idx_te, out_dir, hparams_fn=_hparams)
 
-def run_unregularized_logistic(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, out_dir, **_):
-    _run_sklearn_logistic(args, build_unregularized_logistic, "unregularized_logistic",
+def run_logistic(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, out_dir, **_):
+    _run_sklearn_logistic(args, build_logistic, "logistic",
                           pw, cov, labels, pw_names, cov_cols,
                           idx_tr, idx_va, idx_te, out_dir)
 
@@ -531,7 +531,7 @@ def run_gnn(args, pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te, o
 RUNNERS = {
     "l1_logistic":         run_l1_logistic,
     "elasticnet":          run_elasticnet,
-    "unregularized_logistic": run_unregularized_logistic,
+    "logistic":               run_logistic,
     "random_forest":       run_random_forest,
     "global_attention":    run_global_attention,
     "transformer":         run_transformer,
