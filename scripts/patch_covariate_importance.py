@@ -1,30 +1,3 @@
-"""
-Post-hoc covariate importance patching for global_attention and transformer runs.
-
-Retraining is NOT required. This script:
-  1. Loads the saved model checkpoint (.pt) and best_hparams.json
-  2. Reconstructs the original test data loader (same scaling as training)
-  3. Computes gradient × input covariate attribution on the test set
-  4. Appends the covariate scores to the existing ranking.json
-
-Run this once per (feature_set, model) directory that's missing covariate scores.
-
-Usage:
-  # Single run:
-  python scripts/patch_covariate_importance.py \
-      --run_dir  /path/PATHWAY_MODELING/gwas_prs/global_attention/ \
-      --splits_dir /path/PATHWAY_MODELING/gwas_prs/
-
-  # All global_attention + transformer runs under a parent directory:
-  python scripts/patch_covariate_importance.py \
-      --parent_dir /path/PATHWAY_MODELING/
-
-Output:
-  Overwrites ranking.json in each run_dir, appending covariate scores.
-  Original pathway scores are preserved exactly.
-  A backup (ranking.json.bak) is written before modification.
-"""
-
 import argparse
 import json
 import os
@@ -154,7 +127,6 @@ def patch_run(run_dir, splits_dir, model_name, prs_col=None, prs_file=None, dry_
     with open(hparams_path) as f:
         hparams = json.load(f)
 
-    # Read actual K and C from checkpoint so we don't rely on guessing from data loading
     try:
         K_ckpt, C_ckpt = checkpoint_dims(run_dir, model_name)
     except Exception as e:
@@ -169,16 +141,14 @@ def patch_run(run_dir, splits_dir, model_name, prs_col=None, prs_file=None, dry_
     # Separate true pathway keys (have __ prefix) from any covariate keys already present
     pathway_cols = [k for k in existing_ranking.keys() if "__" in k]
     if not pathway_cols:
-        # Fallback: all keys are pathway names (no prefix convention used)
         pathway_cols = list(existing_ranking.keys())
 
-    # Check if already patched (covariate keys present = no __ in key)
     cov_keys_present = [k for k in existing_ranking if "__" not in k]
     if cov_keys_present:
         print(f"  SKIP (already has {len(cov_keys_present)} covariate scores): {run_dir}")
         return
 
-    # Load data with the exact pathway subset the model was trained on
+    # Load data with the pathway subset the model was trained on
     pw, cov, labels, pw_names, cov_cols, idx_tr, idx_va, idx_te = load_splits(
         splits_dir, pathway_cols=pathway_cols
     )
