@@ -1,18 +1,8 @@
 """
-Step 1: Create and save train/val/test split indices.
-Run this once before submitting model training jobs.
+train/val/test split indices 
+[--val_frac 0.1] [--test_frac 0.2] [--seed 42]
 
-Usage:
-  python scripts/prepare_splits.py \
-    --pathway_matrix data/pathway_matrix.csv \
-    --covariates data/covariates.csv \
-    --label_col afib \
-    --output_dir results/ \
-    [--val_frac 0.1] [--test_frac 0.2] [--seed 42]
-
-Outputs:
-  results/splits.npz  — arrays: idx_train, idx_val, idx_test
-  results/data_config.json — shape/column metadata needed by training jobs
+splits.npz  — arrays: idx_train, idx_val, idx_test
 """
 
 import argparse
